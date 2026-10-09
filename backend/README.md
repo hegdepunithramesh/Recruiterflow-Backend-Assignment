@@ -1,6 +1,6 @@
 # Recruiter Bot backend
 
-Section B backend through **Phase 05**: Express infrastructure, five PostgreSQL domain tables, handwritten migrations and repeatable ingestion of the exact assignment fixture. Storage and runtime permissions are verified on PostgreSQL **18.6**. Scoring, both matching APIs and the separate SQL Detective dataset/answers remain pending.
+Section B backend through **Phase 06**: Express infrastructure, five PostgreSQL domain tables, handwritten migrations, repeatable fixture ingestion and a pure, tested matching engine. Storage/runtime permissions were verified on PostgreSQL **18.6** in Phase 05. Both HTTP matching APIs and the separate SQL Detective dataset/answers remain pending.
 
 ## Observed verification — 9 October 2026
 
@@ -14,7 +14,7 @@ The user reported these results from the local backend:
 | GET /health | HTTP 200 `{"status":"ok"}` |
 | GET /ready | HTTP 200 `{"status":"ready"}` |
 
-These user observations verify startup and connectivity/target. The separate Phase 05 agent checks below verify domain storage and runtime permissions against real PostgreSQL. Matching behavior, live service timeout execution and shutdown with active PostgreSQL clients remain unverified.
+These user observations verify startup and connectivity/target. The separate Phase 05 agent checks below verify domain storage/runtime permissions; Phase 06 unit checks verify pure scoring/ranking. Matching HTTP behavior, live service timeout execution and shutdown with active PostgreSQL clients remain unverified.
 
 ## Prerequisites and installation
 
@@ -76,7 +76,7 @@ npm.cmd run db:verify
 
 `db:migrate` applies ordered handwritten SQL and records SHA-256 checksums in a private `schema_migrations` ledger. All pending migrations and ledger writes share one transaction. Matching history makes reruns a no-op; changed, missing or unknown applied versions fail. Keep applied files immutable and add a new numbered file for changes. `.gitattributes` preserves LF migration bytes across checkouts. Conflicting existing domain tables fail rather than being silently accepted. There is no automatic down/reset command.
 
-The schema contains candidates, jobs, canonical skills and two association tables. Availability, traits, quirks, culture keywords and taglines are retained. Constraints enforce positive IDs, nonnegative integer years, nonblank required text, availability values, canonical unique skills, unique associations and foreign keys. Metadata arrays are descriptive lists; ingestion validates their shape and rejects empty job skills. Five primary-key indexes and the unique skill-name index suffice for this fixture. Matches will be computed from pairs rather than stored.
+The schema contains candidates, jobs, canonical skills and two association tables. Availability, traits, quirks, culture keywords and taglines are retained. Constraints enforce positive IDs, nonnegative integer years, nonblank required text, availability values, canonical unique skills, unique associations and foreign keys. Metadata arrays are descriptive lists; ingestion validates their shape and rejects empty job skills. Five primary-key indexes and the unique skill-name index suffice for this fixture. The pure engine computes matches from pairs without storing results.
 
 `db:seed` validates the complete fixture before writing, then ingests it transactionally. Candidate IDs **1–15** and job IDs **1–6** follow PDF order and are reserved for those fixtures. A different name/title at a reserved ID aborts. Reruns restore fixture-owned fields and replace only their skill links; unrelated owners/links and unused skills survive. Skills are trimmed, lowercased and deduplicated. The identity sequence advances past existing explicit IDs and never rewinds. PostgreSQL sequence changes can leave gaps after rollback; table changes still roll back. Migration/seed writers serialize through the same advisory lock.
 
@@ -89,6 +89,14 @@ The schema contains candidates, jobs, canonical skills and two association table
 Unrelated data may increase totals without invalidating the fixture. Commands emit safe status/counts and exit nonzero on failure, without printing connection URLs or raw driver details.
 
 Migration permissions grant runtime database CONNECT, public-schema USAGE and SELECT on the five domain tables. Ledger access, sequence access, writes, schema creation and temporary-table creation are denied, including inherited PUBLIC grants on this dedicated database. Commands do not elevate or alter global role attributes.
+
+## Matching algorithm v1
+
+The pure engine in `src/modules/matching/policy.ts` uses **score = 80 × S + 20 × E**, where S is the fraction of distinct required job skills covered by the candidate, and E is `min(candidate years / minimum years, 1)`. A zero-year minimum gives E = 1. For example, Sheldon C. covers one of Backend Detective's three skills and has nine years against a three-year minimum: `80 × 1/3 + 20 × 1 = 46.666…`, displayed as **46.67**. His explanation is `Matched 1 of 3 required skills; 9 years experience meets the 3-year minimum.` Both ranking directions use this same pair scorer and reason.
+
+Rank by unrounded score descending, then skill coverage descending, then counterpart ID ascending. Only the final displayed score uses decimal half-up rounding to hundredths; names and rounded values never determine order. Skills are trimmed, lowercased and deduplicated, preserving internal spaces/hyphens without synonyms. Invalid skills/experience and empty job requirements fail with a domain error; empty candidate skills are valid. Ranking validates subjects even when there are no counterparts and never returns a partial ranking after invalid input.
+
+The 80/20 weights are an explainable heuristic, not a calibrated hiring probability. Extra candidate skills do not penalize fit; experience above the minimum earns no further bonus. All counterparts remain eligible, including zero-score and `Not looking` candidates. Availability is preserved; traits, culture, quirks and taglines add no subjective weights. This can rank unavailable candidates highly. The module uses type-only views of existing fixture types and has no runtime imports, database, environment or network access. HTTP routes and SQL repositories are not part of Phase 06.
 
 ## Run and check
 
@@ -115,7 +123,7 @@ Both requests returned the documented HTTP 200 bodies in the user-observed live 
 
 Stop with Ctrl+C/SIGINT or SIGTERM. Shutdown stops accepting requests, drains in-flight work and closes the pool, with a ten-second deadline. The pool has at most five clients, a two-second connection/acquisition timeout, a two-second PostgreSQL statement timeout and a three-second client query timeout; there are no automatic retries. Logs omit raw paths/query strings, driver messages, SQL, connection URLs and stacks.
 
-Build, typecheck, lint and all **46 unit/infrastructure tests passed on 9 October**, with zero failures/skips. Node's test runner through tsx covers infrastructure HTTP/configuration/shutdown behavior plus fixture/config/history unit checks. Signal tests use child-process IPC for Windows compatibility. These tests run separately from actual database checks.
+Build, typecheck, lint and all **96 unit/infrastructure tests passed on 9 October**, with zero failures/skips. The 50 matching tests cover all seven numerical examples, all 90 supplied pairs and equality across both pure ranking directions, normalization, invalid inputs, raw-score/coverage/ID ties, decimal rounding, reasons and frozen-input preservation. The existing 46 infrastructure/storage unit tests still pass. Signal tests use child-process IPC for Windows compatibility. These checks run separately from actual database tests; no live database commands or mutations ran in Phase 06.
 
 ## Disposable database checks
 
@@ -135,6 +143,6 @@ The suite guards its actual target before writes and derives a test runtime conn
 
 Real PostgreSQL checks covered fresh migration, migration/seed reruns, exact fields/relationships, checksum mismatch rejection, constraints, rollback after partial migration/seed writes, unrelated-row preservation, sequence reconciliation, concurrent seeds and actual runtime denial of ledger reads/writes/DDL/sequence access. The initial run passed fresh migration/rollback but found one test expecting the older foreign-key error code for RESTRICT; corrected to PostgreSQL 18's `23001`. The subsequent suite passed **30 database subtests**, with the already-executed fresh case skipped (Node reports 31 passes including the parent test, one skip, zero failures).
 
-Development migration applied versions 1/2; its second run was a no-op. Both development seed runs succeeded, and verification returned the exact totals above with `fixtureVerified` and `runtimeReadOnly` true. Clean-checkout reproduction of the finished assignment, matching behavior, Detective access isolation, live service timeout execution and shutdown with active PostgreSQL clients remain unverified.
+In Phase 05, development migration applied versions 1/2; its second run was a no-op. Both development seed runs succeeded, and verification returned the exact totals above with `fixtureVerified` and `runtimeReadOnly` true. That database suite was not rerun for pure Phase 06 changes. Clean-checkout reproduction of the finished assignment, matching HTTP behavior, Detective access isolation, live service timeout execution and shutdown with active PostgreSQL clients remain unverified.
 
-The real `.env`, generated `dist/`, `node_modules/`, assignment PDF and internal planning files are ignored. Include the placeholder-only `.env.example` and package-lock.json in the reviewed submission. AI assisted planning, scaffolding, handwritten schema/seed implementation, tests, documentation, review and debugging. Phase 06 has not started.
+The real `.env`, generated `dist/`, `node_modules/`, assignment PDF and internal planning files are ignored. Include the placeholder-only `.env.example` and package-lock.json in the reviewed submission. AI assisted planning, scaffolding, handwritten schema/seed and matching implementation, tests, documentation, review and debugging. Phase 07 has not started.
