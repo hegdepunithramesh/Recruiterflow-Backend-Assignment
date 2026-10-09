@@ -1,6 +1,6 @@
 # Recruiter Bot backend
 
-Section B backend through **Phase 08 implementation and live verification**: Recruiter Bot storage/matching APIs remain verified on PostgreSQL **18.6**. SQL Detective has separate handwritten setup, all four required answers plus the window-function bonus, a guarded offline loader and verification tests. The user reported **19 live PostgreSQL tests passed, zero failures and zero skips**, verifying all five baseline results and the selected edge cases. The separate Detective connection/setup blocker is resolved.
+Section B backend through **Phase 09 final verification**. Recruiter Bot ingestion, handwritten relational storage and both matching APIs are verified. The separate original Detective fixture, all four required SQL answers and window-function bonus are verified. Clean-checkout reproduction and active-database shutdown checks passed on PostgreSQL **18.6**. Final successful runs: **187 passes, zero failures, zero skips** — 116 unit/infrastructure, 32 storage, 15 API, 19 Detective and five shutdown tests (Node parent tests included). Reviewer repository access remains unverified; details and Windows signal limitations appear below.
 
 ## Observed verification — 9 October 2026
 
@@ -14,7 +14,7 @@ The user reported these results from the local backend:
 | GET /health | HTTP 200 `{"status":"ok"}` |
 | GET /ready | HTTP 200 `{"status":"ready"}` |
 
-These earlier user observations verify startup and connectivity/target. Phase 07 agent verification separately confirmed schema/readiness and both matching endpoints against the development database. The disposable-database HTTP suite exercised all 90 fixture pairs, safe failures, actual connection loss, acquisition/statement timeouts and snapshot consistency. Shutdown after live requests closed the real pool; shutdown with active PostgreSQL work remains unverified.
+These earlier user observations verify startup and connectivity/target. Phase 07 agent verification separately confirmed schema/readiness and both matching endpoints against the development database. The disposable-database HTTP suite exercised all 90 fixture pairs, safe failures, actual connection loss, acquisition/statement timeouts and snapshot consistency. Shutdown after those live requests closed the real pool. Phase 09 subsequently verified shutdown with active PostgreSQL work on a fresh isolated instance, as recorded below.
 
 ## Prerequisites and installation
 
@@ -58,7 +58,7 @@ SHOW server_version;
 \quit
 ```
 
-The verified local environment already has this database/login; skip creation there. If the role/database exists on another machine, inspect it instead of dropping/resetting anything. These commands create no domain tables. Offline migrations/seeds use a separate database/schema owner login and grant the runtime role domain SELECT permissions. The runtime login must not own the database/schema or inherit other roles. The Detective database and its permission boundary are deferred to its phase.
+The verified local environment already has this database/login; skip creation there. If the role/database exists on another machine, inspect it instead of dropping/resetting anything. These commands create no domain tables. Offline migrations/seeds use a separate database/schema owner login and grant the runtime role domain SELECT permissions. The runtime login must not own the database/schema or inherit other roles. The separate Detective database and its permission boundary are documented below.
 
 Set `DATABASE_URL` in `.env` to **recruiter_bot_app** targeting `/recruiter_bot`. Set `ADMIN_DATABASE_URL` to a separate privileged database/schema owner login targeting that same database. Only offline migrate/seed/verify commands read the owner connection; HTTP startup does not. Never replace the runtime login with an owner or paste/commit credentials.
 
@@ -123,7 +123,7 @@ Both probes returned the documented HTTP 200 bodies in Phase 07 live checks. `/h
 
 Stop with Ctrl+C/SIGINT or SIGTERM. Shutdown stops accepting requests, drains in-flight work and closes the pool, with a ten-second deadline. The pool has at most five clients, a two-second connection/acquisition timeout, a two-second PostgreSQL statement timeout and a three-second client query timeout; there are no automatic retries. Logs omit raw paths/query strings, driver messages, SQL, connection URLs and stacks.
 
-Build, typecheck, lint and all **101 unit/infrastructure tests passed on 9 October**, with zero failures/skips. This includes the 50 unchanged policy tests, four service failure/transaction tests and updated configuration/readiness checks. Signal tests use child-process IPC for Windows compatibility. Database-backed tests run separately below.
+Historical Phase 07 checks passed 101 unit/infrastructure tests on 9 October. Phase 09's clean clone passed build/typecheck/lint and all **116 unit/infrastructure tests**, zero failures/skips, including the policy, service, readiness and Detective checks. Signal tests use child-process IPC on Windows; real PostgreSQL suites run separately below.
 
 ## Matching API demonstration
 
@@ -207,15 +207,16 @@ Set `TEST_ADMIN_DATABASE_URL` locally to the owner connection for that exact dat
 ```powershell
 npm.cmd run test:db
 npm.cmd run test:api
+npm.cmd run test:shutdown
 ```
 
-Run these suites sequentially because they share the disposable database. Both guard the actual target before writes and derive the test runtime connection from DATABASE_URL by replacing only the database name. They accept an empty database or its existing six-table baseline and never drop/reset a database. Storage failure variants roll back; HTTP variants commit test-only changes visible to the runtime, then restore affected tables/permissions and reseed/verify the baseline in finally blocks. Do not interrupt tests mid-variant. Missing/unsafe configuration fails visibly. On rerun, the storage fresh-database case is explicitly skipped because migrations already exist.
+Run these suites sequentially because they share the disposable database. Storage/API suites guard the actual target before writes and derive the test runtime connection from DATABASE_URL by replacing only the database name. They accept an empty database or its existing six-table baseline and never drop/reset a database. Storage failure variants roll back; HTTP variants commit test-only changes visible to the runtime, then restore affected tables/permissions and reseed/verify the baseline in finally blocks. Do not interrupt tests mid-variant. Missing/unsafe configuration fails visibly. On rerun, the storage fresh-database case is explicitly skipped because migrations already exist.
 
 Real PostgreSQL checks covered fresh migration, migration/seed reruns, exact fields/relationships, checksum mismatch rejection, constraints, rollback after partial migration/seed writes, unrelated-row preservation, sequence reconciliation, concurrent seeds and actual runtime denial of ledger reads/writes/DDL/sequence access. The initial run passed fresh migration/rollback but found one test expecting the older foreign-key error code for RESTRICT; corrected to PostgreSQL 18's `23001`. The subsequent suite passed **30 database subtests**, with the already-executed fresh case skipped (Node reports 31 passes including the parent test, one skip, zero failures).
 
 Phase 07 reran test:db: **30 subtests passed**, plus the parent (31 passes), one fresh-case skip, zero failures. Test:api passed **14 subtests**, plus the parent (15 passes), zero failures/skips. It executes real HTTP/SQL for all 90 pairs in both directions, complete literal rankings, reasons/details, repeat ordering, validation before reads, absent/empty subjects, zero-skill candidates, rounded-score ties and two-client snapshot isolation. Real termination, exhaustion of all five clients, blocked-SELECT statement timeout, missing table and read-permission loss produce safe failures and recovery. A scorer exception is deliberately injected after real reads to verify generic 500 and release before scoring.
 
-The first HTTP suite run exposed an unhandled checked-out client connection error. Capturing client error events during snapshots/readiness and discarding damaged clients fixed it; the expanded suite passed afterward. Runtime startup/readiness changes required no new migration or ledger privileges. Applied SQL and the assignment fixture/policy remain unchanged. Finished-assignment clean-checkout reproduction, shutdown with active PostgreSQL work and final submission review remain unverified. Phase 08 subsequently verified the Detective guard's effective Bot CONNECT restriction.
+The first HTTP suite run exposed an unhandled checked-out client connection error. Capturing client error events during snapshots/readiness and discarding damaged clients fixed it; the expanded suite passed afterward. Runtime startup/readiness changes required no new migration or ledger privileges. Applied SQL and the assignment fixture/policy remain unchanged. Phase 09 completed clean-checkout reproduction and active-database shutdown checks. Both the effective Detective CONNECT guard and an actual refused Bot login connection passed. Reviewer repository access remains unverified.
 
 ## SQL Detective: separate setup and answers
 
@@ -271,9 +272,9 @@ Q4 counts Final interview rows, including repeated, failed, no_show and pending 
 
 Q5 aggregates passed Final interview rows by department/recruiter, then DENSE_RANK ranks success counts within each department. Rank one returns every tied winner; recruiter ID only orders the final output, so it cannot break a tie. Departments with no successes are omitted; a hypothetical NULL department remains its own group and sorts last. This counts successful interview rows, not deduplicated people or titles. Email identity is a practical fixture assumption, not a guaranteed real-world person identifier.
 
-Verified baseline results from the user-reported live PostgreSQL suite; every actual result matched the independent expectation:
+Verified baseline results from the Phase 08 user-reported suite and Phase 09 clean-checkout PostgreSQL execution; every actual result matched the independent expectation:
 
-| Question | Expected rows | Actual Phase 08 result |
+| Question | Expected rows | Actual live result |
 | --- | --- | --- |
 | 1 | Open postings: 1 (Backend Engineer I, recruiter 1 Priya Shah), 2 (Backend Engineer I, recruiter 2 Daniel Ortiz), 4 (Backend Engineer II, recruiter 1 Priya Shah), 5 (DevOps Engineer, recruiter 4 Wei Zhang). | VERIFIED: all four rows match. |
 | 2 | Posting IDs 1–7 have Final applicant counts 2/2/1/2/0/0/2. | VERIFIED: all seven rows match, including zeros. |
@@ -281,6 +282,33 @@ Verified baseline results from the user-reported live PostgreSQL suite; every ac
 | 4 | Recruiter 1 Priya Shah: 3 passed / 4 Finals = 0.75; recruiter 2 Daniel Ortiz: 2 / 4 = 0.5. Other recruiters excluded. | VERIFIED: both count/rate rows match; SQL NUMERIC division checked. |
 | 5 bonus | Data: recruiter 3 Fatima Al-Sayed, one placement; Engineering: recruiter 1 Priya Shah, three. Infrastructure omitted. | VERIFIED: both winning rows match. |
 
-Phase 08 implementation checks on 9 October compared every setup/reference value and all four definitions/20 columns directly with PDF pp. 11–13; exact match. All **116 unit/infrastructure tests** passed, including 15 new Detective checks; build/typecheck/lint passed. Initial missing-configuration attempts stopped safely before connection and were superseded by the user-reported live run: **19 tests passed, zero failures and zero skips**. That suite verified the four-table/47-row fixture, no-op loader rerun, all five answers, rollback-only edge cases, rejection of altered fixture definitions/data and read-only offline answer execution. Its connected-target and effective Bot CONNECT guards passed; it does not separately attempt a denied Bot login connection. Recruiter Bot db:verify and the earlier compiled development curl checks (port 51645) returned unchanged 15/six matches and complete examples. This documentation follow-up records those results without rerunning commands or changing implementation.
+Historical Phase 08 implementation checks compared every setup/reference value and all four definitions/20 columns directly with PDF pp. 11–13; exact match. Unit/infrastructure tests passed 116, and build/typecheck/lint passed. The user-reported 19-pass live run superseded initial missing-configuration attempts. Phase 09 independently reproduced the exact fixture, all five answers, no-op loader rerun and transactional edges from committed main; compiled answers and direct psql execution also passed. Its guard verified effective Bot CONNECT denial, and an actual Bot connection attempt was denied with 42501. Earlier development Bot db:verify/curl evidence remains historical; Phase 09 exercised the unchanged Bot implementation on a fresh isolated instance.
 
-The real `.env`, generated `dist/`, `node_modules/`, assignment PDF and internal planning files are ignored. Include the placeholder-only `.env.example`, versioned SQL/data and package-lock.json in the reviewed submission. AI assisted planning, scaffolding, handwritten schema/seed/repositories, matching/API and Detective implementation, tests, documentation, review and debugging. Phase 09 has not started. Finished-assignment clean checkout, final submission review and separate compiled CLI execution remain unverified; the live Detective suite and five baseline answers are verified.
+The real `.env`, generated `dist/`, `node_modules/`, assignment PDF and all local planning/evidence documents in `docs/` are ignored. Submitted READMEs use tracked backend assets and contain essential setup/verification information directly. Include the placeholder-only `.env.example`, SQL/data and package-lock.json in the reviewed submission. AI assisted planning, scaffolding, handwritten schema/seed/repositories, matching/API and Detective implementation, tests, documentation, review, debugging and Phase 09 verification. No other track was started; no staging, commit, push or submission was performed.
+
+## Phase 09 clean-checkout and shutdown evidence — 10 October 2026
+
+Committed main **5e077a0** was cloned separately with only tracked files. npm.cmd ci --ignore-scripts installed fresh dependencies; the clone initially had no node_modules, dist, .env or internal docs. The tracked placeholder env example was copied locally for the npm start smoke; all real connection values came securely from process environment, which overrides placeholders. Installation reported zero vulnerabilities in its audit of 192 packages.
+
+Verification used a newly initialized SCRAM-authenticated PostgreSQL 18.6 instance, loopback port **51886**, with fresh databases named recruiter_bot, recruiter_bot_phase05_test and sql_detective. These names are enforced by existing guards. Using a fresh instance allows those guards to stay intact while keeping every existing database untouched. Do not run this final reproduction against an existing instance's databases. Actual data_directory/port were checked before writes; the isolated server was stopped afterward.
+
+All documented typecheck, lint and build commands passed. Fresh Bot migrations applied [1,2], their rerun applied []; both seeds loaded 15 candidates/six jobs. Verification confirmed exact fields/skills, runtime read-only permissions and totals 15/6/27/50/16. Detective fresh loading returned loaded with all 47 original rows; verification, no-op rerun, all five answers, compiled answer CLI and direct psql answer-file execution passed. A real recruiter_bot_app connection to sql_detective was refused with 42501.
+
+| Final suite | Passes | Failures | Skips |
+| --- | --- | --- | --- |
+| Unit/infrastructure | 116 | 0 | 0 |
+| Storage, fresh disposable DB | 32 | 0 | 0 |
+| PostgreSQL matching API | 15 | 0 | 0 |
+| SQL Detective | 19 | 0 | 0 |
+| Active-database shutdown | 5 | 0 | 0 |
+| Total | 187 | 0 | 0 |
+
+Counts include Node parent tests. The 182 existing tests ran from committed main. The five new shutdown tests ran against the Phase 09 working-tree additions; their typecheck/lint passed. The fresh storage case executed rather than skipping. These totals describe final successful runs; the initial registry EACCES and local harness/test-authoring issues were resolved before those runs.
+
+Eight read-only README curls passed against the compiled clone, with exact success examples and safe 400/404/400 errors; its pool closed. A separate **npm.cmd start** smoke on port 51525 returned health/ready 200 and both matching endpoints with 15/six matches. db:verify afterward passed and the clone's tracked files remained clean.
+
+test:shutdown requires the exact disposable test fixture prepared by test:db/test:api. It never migrates, seeds or edits data: owner locks roll back, and fixture verification runs before/after. Real active SELECT drain passes for both installed signal handlers; new TCP requests are refused and the real pool closes to zero clients. A blocked SELECT that reaches statement timeout returns safe 503 during drain. The deadline case deliberately extends only its test query beyond ordinary 2s/3s limits; the child logs shutdown_failed and exits 1 after the ten-second bound, as expected by a passing regression assertion.
+
+On Windows, IPC invokes the installed Node SIGINT/SIGTERM handlers; native console Ctrl+C/SIGTERM delivery remains unverified. The npm start smoke process was forcefully stopped after requests completed, which provides no graceful-signal evidence. No production code or matching policy changed.
+
+The [configured repository](https://github.com/hegdepunithramesh/Recruiterflow-Backend-Assignment) requested authentication for anonymous main-ref access. Confirm public visibility or the recruiter's granted private access before submitting. Review and commit the unstaged Phase 09 changes first; no automatic commit, push, invitation or submission occurred.
