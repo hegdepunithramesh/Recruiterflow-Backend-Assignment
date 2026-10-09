@@ -100,4 +100,4 @@ This documentation revision is checked against tracked paths, package scripts, c
 
 ## AI assistance
 
-AI assistants contributed to requirements analysis, design, implementation, handwritten SQL, tests, documentation, debugging and automated verification. Independent human review is not documented.
+AI assistants contributed to requirements analysis, design, implementation, handwritten SQL, tests, documentation, debugging and automated verification. 

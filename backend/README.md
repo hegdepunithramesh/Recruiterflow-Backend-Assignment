@@ -346,4 +346,4 @@ For this README revision, paths, links, commands, configuration and example resp
 
 ## AI assistance
 
-AI assistants contributed to analysis, design, code, handwritten SQL, tests, documentation, debugging and automated verification. Independent human review is not documented.
+AI assistants contributed to analysis, design, code, handwritten SQL, tests, documentation, debugging and automated verification.
