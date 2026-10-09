@@ -16,4 +16,4 @@ export async function serve(app: Express) {
   };
 }
 
-export const testDatabaseUrl = 'postgresql://test_user:test_password@127.0.0.1:5432/recruiter_bot';
+export const testDatabaseUrl = 'postgresql://recruiter_bot_app:test_password@127.0.0.1:5432/recruiter_bot';

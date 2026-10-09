@@ -4,10 +4,12 @@ import express from 'express';
 import type { DatabaseLifecycle } from './db.js';
 import { AppError, errorHandler } from './errors.js';
 import type { LogEntry, Logger } from './logger.js';
+import { registerMatchingRoutes } from './modules/matching/routes.js';
+import type { MatchingService } from './modules/matching/service.js';
 
 type HttpLog = Extract<LogEntry, { event: 'http_request' }>;
 
-export function createApp(database: Pick<DatabaseLifecycle, 'checkReady'>, logger: Logger) {
+export function createApp(database: Pick<DatabaseLifecycle, 'checkReady'>, logger: Logger, matching?: MatchingService) {
   const app = express();
   app.disable('x-powered-by');
 
@@ -44,6 +46,7 @@ export function createApp(database: Pick<DatabaseLifecycle, 'checkReady'>, logge
     response.json({ status: 'ready' });
   });
 
+  if (matching) registerMatchingRoutes(app, matching);
   app.use((_request, _response, next) => { next(new AppError('ROUTE_NOT_FOUND')); });
   app.use(errorHandler);
   return app;

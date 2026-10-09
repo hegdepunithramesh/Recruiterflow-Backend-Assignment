@@ -3,9 +3,10 @@ import type { Config } from './config.js';
 import type { DatabaseLifecycle } from './db.js';
 import type { Logger } from './logger.js';
 import { createApp } from './app.js';
+import type { MatchingService } from './modules/matching/service.js';
 
-export async function startServer(config: Config, database: DatabaseLifecycle, logger: Logger) {
-  const server = createServer(createApp(database, logger));
+export async function startServer(config: Config, database: DatabaseLifecycle, logger: Logger, matching?: MatchingService) {
+  const server = createServer(createApp(database, logger, matching));
   server.requestTimeout = 10000;
   server.headersTimeout = 10000;
   try {

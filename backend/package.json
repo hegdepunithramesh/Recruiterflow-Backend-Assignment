@@ -15,7 +15,8 @@
     "db:migrate": "node --env-file-if-exists=.env --import tsx src/storage/cli.ts migrate",
     "db:seed": "node --env-file-if-exists=.env --import tsx src/storage/cli.ts seed",
     "db:verify": "node --env-file-if-exists=.env --import tsx src/storage/cli.ts verify",
-    "test:db": "node --env-file-if-exists=.env --import tsx --test tests/integration/storage.test.ts"
+    "test:db": "node --env-file-if-exists=.env --import tsx --test tests/integration/storage.test.ts",
+    "test:api": "node --env-file-if-exists=.env --import tsx --test tests/integration/matching.test.ts"
   },
   "dependencies": {
     "express": "5.2.1",

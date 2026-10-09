@@ -17,7 +17,8 @@ for (const [label, url] of [
   ['wrong target', testDatabaseUrl.replace('recruiter_bot', 'sql_detective')],
   ['query override', `${testDatabaseUrl}?dbname=sql_detective`],
   ['fragment', `${testDatabaseUrl}#secret`],
-  ['missing credentials', testDatabaseUrl.replace('test_user:test_password@', '')],
+  ['missing credentials', testDatabaseUrl.replace('recruiter_bot_app:test_password@', '')],
+  ['owner runtime login', testDatabaseUrl.replace('recruiter_bot_app', 'postgres')],
   ['invalid database port', testDatabaseUrl.replace('5432', '70000')],
 ] as const) {
   void test(`rejects database configuration: ${label}`, () => {

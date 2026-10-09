@@ -1,6 +1,6 @@
 # Recruiter Bot backend
 
-Section B backend through **Phase 06**: Express infrastructure, five PostgreSQL domain tables, handwritten migrations, repeatable fixture ingestion and a pure, tested matching engine. Storage/runtime permissions were verified on PostgreSQL **18.6** in Phase 05. Both HTTP matching APIs and the separate SQL Detective dataset/answers remain pending.
+Section B backend through **Phase 07**: Express infrastructure, five PostgreSQL domain tables, handwritten migrations, repeatable fixture ingestion and both matching APIs. The shared pure engine, real SQL/HTTP behavior and runtime permissions are verified on PostgreSQL **18.6**. The separate SQL Detective dataset/answers remain pending.
 
 ## Observed verification — 9 October 2026
 
@@ -14,7 +14,7 @@ The user reported these results from the local backend:
 | GET /health | HTTP 200 `{"status":"ok"}` |
 | GET /ready | HTTP 200 `{"status":"ready"}` |
 
-These user observations verify startup and connectivity/target. The separate Phase 05 agent checks below verify domain storage/runtime permissions; Phase 06 unit checks verify pure scoring/ranking. Matching HTTP behavior, live service timeout execution and shutdown with active PostgreSQL clients remain unverified.
+These earlier user observations verify startup and connectivity/target. Phase 07 agent verification separately confirmed schema/readiness and both matching endpoints against the development database. The disposable-database HTTP suite exercised all 90 fixture pairs, safe failures, actual connection loss, acquisition/statement timeouts and snapshot consistency. Shutdown after live requests closed the real pool; shutdown with active PostgreSQL work remains unverified.
 
 ## Prerequisites and installation
 
@@ -110,7 +110,7 @@ npm.cmd run build
 npm.cmd start
 ```
 
-Use `npm.cmd run dev` for TypeScript watch mode. The service listens on **127.0.0.1**, not all network interfaces. Startup validates configuration and confirms the connected database with a read-only probe before opening the port. Missing/invalid configuration, an unavailable database or wrong connected target exits with code 1 and a safe JSON diagnostic. No schema/fixture writes run during startup. Port conflicts log the `listener` category.
+Use `npm.cmd run dev` for TypeScript watch mode. The service listens on **127.0.0.1**. Startup requires the configured/connected recruiter_bot database and recruiter_bot_app login, restricted effective permissions, and all columns used by the repositories. Missing/invalid configuration, an unavailable database or missing schema/read grants exits with code 1 and a safe JSON diagnostic. Schema/permission failures use the `database_schema` category; port conflicts use `listener`. Startup performs only reads. Run offline migrate/seed/verify beforehand: the runtime cannot inspect migration-ledger contents/checksums.
 
 After successful startup, from another terminal:
 
@@ -119,11 +119,80 @@ curl.exe -i http://127.0.0.1:3000/health
 curl.exe -i http://127.0.0.1:3000/ready
 ```
 
-Both requests returned the documented HTTP 200 bodies in the user-observed live run above. `/health` operates independently of the database. `/ready` requires `SELECT current_database() AS database_name` to succeed with `recruiter_bot`; a failed probe returns safe 503 `DATABASE_NOT_READY` with message `Database is not ready.` Readiness checks connectivity/target only and does not consult the private migration ledger. Matching-specific readiness belongs to a later phase. Unknown routes return safe 404 `ROUTE_NOT_FOUND`, including the pending `/jobs/{id}/matches` and `/candidates/{id}/matches`. Errors use `{"error":{"code":"...","message":"...","requestId":"..."}}`; unexpected errors return safe 500 `INTERNAL_ERROR`. Responses have a generated `X-Request-Id` and `Cache-Control: no-store`.
+Both probes returned the documented HTTP 200 bodies in Phase 07 live checks. `/health` operates independently of the database. `/ready` now repeats startup's connected-target, runtime-role, effective-permission and required-column checks. A failed probe returns 503 `DATABASE_NOT_READY` with message `Database is not ready.` It inspects privilege metadata without reading private ledger rows. Offline `db:verify` remains the migration-history/fixture check; readiness permits valid empty counterpart tables and does not certify fixture loading. All responses have a generated `X-Request-Id` and `Cache-Control: no-store`.
 
 Stop with Ctrl+C/SIGINT or SIGTERM. Shutdown stops accepting requests, drains in-flight work and closes the pool, with a ten-second deadline. The pool has at most five clients, a two-second connection/acquisition timeout, a two-second PostgreSQL statement timeout and a three-second client query timeout; there are no automatic retries. Logs omit raw paths/query strings, driver messages, SQL, connection URLs and stacks.
 
-Build, typecheck, lint and all **96 unit/infrastructure tests passed on 9 October**, with zero failures/skips. The 50 matching tests cover all seven numerical examples, all 90 supplied pairs and equality across both pure ranking directions, normalization, invalid inputs, raw-score/coverage/ID ties, decimal rounding, reasons and frozen-input preservation. The existing 46 infrastructure/storage unit tests still pass. Signal tests use child-process IPC for Windows compatibility. These checks run separately from actual database tests; no live database commands or mutations ran in Phase 06.
+Build, typecheck, lint and all **101 unit/infrastructure tests passed on 9 October**, with zero failures/skips. This includes the 50 unchanged policy tests, four service failure/transaction tests and updated configuration/readiness checks. Signal tests use child-process IPC for Windows compatibility. Database-backed tests run separately below.
+
+## Matching API demonstration
+
+After startup, run these from another terminal (replace 3000 if PORT was changed):
+
+```powershell
+curl.exe -sS -i http://127.0.0.1:3000/jobs/1/matches
+curl.exe -sS -i http://127.0.0.1:3000/candidates/1/matches
+curl.exe -sS -i http://127.0.0.1:3000/jobs/2/matches
+curl.exe -sS -i http://127.0.0.1:3000/jobs/01/matches
+curl.exe -sS -i http://127.0.0.1:3000/candidates/2147483647/matches
+curl.exe -sS -i "http://127.0.0.1:3000/jobs/1/matches?limit=1"
+```
+
+All six requests were executed with curl against recruiter_bot on an owned ephemeral port **50395**, using the compiled backend and actual recruiter_bot_app login. The first two returned 200 with all 15 candidates and six jobs; their complete bodies matched the agreed examples. Development db:verify passed before and after; no migrations/seeds or other writes were needed. The owned service was stopped and its pool closed.
+
+Job 1 returns candidate IDs **1,9,2,3,4,5,6,7,8,10,11,12,13,14,15**: Sherlock scores 100, Sheldon 46.67, the rest 20. This excerpt shows the first two of the 15 matches:
+
+```json
+{
+  "policyVersion": "v1",
+  "subject": {"type":"job","id":1,"label":"Backend Detective","availability":null},
+  "matches": [
+    {"type":"candidate","id":1,"label":"Sherlock H.","availability":"Immediate","score":100,"reason":"Matched 3 of 3 required skills; 8 years experience meets the 3-year minimum."},
+    {"type":"candidate","id":9,"label":"Sheldon C.","availability":"Immediate","score":46.67,"reason":"Matched 1 of 3 required skills; 9 years experience meets the 3-year minimum."}
+  ]
+}
+```
+
+Candidate 1 returns this complete body:
+
+```json
+{
+  "policyVersion": "v1",
+  "subject": {"type":"candidate","id":1,"label":"Sherlock H.","availability":"Immediate"},
+  "matches": [
+    {"type":"job","id":1,"label":"Backend Detective","availability":null,"score":100,"reason":"Matched 3 of 3 required skills; 8 years experience meets the 3-year minimum."},
+    {"type":"job","id":2,"label":"Rapid Prototyping Engineer","availability":null,"score":20,"reason":"Matched 0 of 2 required skills; 8 years experience meets the 2-year minimum."},
+    {"type":"job","id":3,"label":"Developer Relations Lead","availability":null,"score":20,"reason":"Matched 0 of 2 required skills; 8 years experience meets the 2-year minimum."},
+    {"type":"job","id":4,"label":"Engineering Manager, Chaos Team","availability":null,"score":20,"reason":"Matched 0 of 3 required skills; 8 years experience meets the 5-year minimum."},
+    {"type":"job","id":5,"label":"Incident Commander","availability":null,"score":20,"reason":"Matched 0 of 3 required skills; 8 years experience meets the 4-year minimum."},
+    {"type":"job","id":6,"label":"Sales Engineer","availability":null,"score":20,"reason":"Matched 0 of 3 required skills; 8 years experience meets the 3-year minimum."}
+  ]
+}
+```
+
+Job 2 includes all candidates; its top tied IDs are **3,6,8**, each at 100. Tony's availability remains `Not looking`. There is no threshold, filtering, top-k or pagination. Scores/reasons are identical for each pair in both directions; ranks depend on the subject. Scores are JSON numbers rounded to two decimal places at most, rather than fixed-width strings. A valid subject with no counterparts returns 200 with `matches: []`.
+
+IDs must be decoded ASCII positive integers 1–2147483647 without leading zeros; ID validation runs before query validation or SQL. Any matching-route query parameter is rejected. Error responses use:
+
+```json
+{"error":{"code":"INVALID_ID","message":"id must be a positive integer between 1 and 2147483647 without leading zeros.","requestId":"88b1589b-c428-421d-93de-030a472ded31"}}
+```
+
+The UUID above is illustrative; each error's requestId equals its generated X-Request-Id header and log correlation ID. Incoming request IDs are not adopted.
+
+| HTTP | Code | Message / trigger |
+| --- | --- | --- |
+| 400 | INVALID_ID | id must be a positive integer between 1 and 2147483647 without leading zeros. |
+| 400 | INVALID_QUERY | Query parameters are not supported. |
+| 404 | JOB_NOT_FOUND | Job not found. |
+| 404 | CANDIDATE_NOT_FOUND | Candidate not found. |
+| 404 | ROUTE_NOT_FOUND | Route not found. (including missing path segments) |
+| 503 | DATABASE_UNAVAILABLE | Matching is temporarily unavailable. Please try again later. (known connection loss/refusal, acquisition/statement timeout or shutdown) |
+| 500 | INTERNAL_ERROR | An unexpected error occurred. (unexpected SQL/programming failure or invalid loaded profiles) |
+
+The last three curl examples returned 400 INVALID_ID, 404 CANDIDATE_NOT_FOUND and 400 INVALID_QUERY. Neither database failures nor missing subjects become empty success. No partial ranking is returned after any failure, and there are no automatic retries. Errors/logs omit SQL, driver details and credentials.
+
+For `/jobs/1/matches`, the controller validates the HTTP input, then the service checks out one client and begins a read-only REPEATABLE READ transaction. A parameterized subject SELECT and one aggregate SELECT for all candidate skills use left joins, retaining zero-skill candidates. Full profile validation runs before commit/release. The unchanged pure ranker scores each pair once and orders by raw score, coverage and ID; the controller emits only the contract fields. The reverse route follows the same flow. Each successful request uses two data SELECTs plus transaction control, a missing subject one, and invalid input zero. This snapshot costs transaction round trips but prevents mixing concurrent commits; computed matches avoid stale stored results.
 
 ## Disposable database checks
 
@@ -137,12 +206,15 @@ Set `TEST_ADMIN_DATABASE_URL` locally to the owner connection for that exact dat
 
 ```powershell
 npm.cmd run test:db
+npm.cmd run test:api
 ```
 
-The suite guards its actual target before writes and derives a test runtime connection from `DATABASE_URL` by replacing only the database name. It accepts an empty database or its existing six-table baseline and never drops/resets a database. Failure variants use transactions and leave the fixture baseline intact. Missing/unsafe configuration fails visibly. On rerun, the fresh-database case is explicitly skipped because migrations already exist.
+Run these suites sequentially because they share the disposable database. Both guard the actual target before writes and derive the test runtime connection from DATABASE_URL by replacing only the database name. They accept an empty database or its existing six-table baseline and never drop/reset a database. Storage failure variants roll back; HTTP variants commit test-only changes visible to the runtime, then restore affected tables/permissions and reseed/verify the baseline in finally blocks. Do not interrupt tests mid-variant. Missing/unsafe configuration fails visibly. On rerun, the storage fresh-database case is explicitly skipped because migrations already exist.
 
 Real PostgreSQL checks covered fresh migration, migration/seed reruns, exact fields/relationships, checksum mismatch rejection, constraints, rollback after partial migration/seed writes, unrelated-row preservation, sequence reconciliation, concurrent seeds and actual runtime denial of ledger reads/writes/DDL/sequence access. The initial run passed fresh migration/rollback but found one test expecting the older foreign-key error code for RESTRICT; corrected to PostgreSQL 18's `23001`. The subsequent suite passed **30 database subtests**, with the already-executed fresh case skipped (Node reports 31 passes including the parent test, one skip, zero failures).
 
-In Phase 05, development migration applied versions 1/2; its second run was a no-op. Both development seed runs succeeded, and verification returned the exact totals above with `fixtureVerified` and `runtimeReadOnly` true. That database suite was not rerun for pure Phase 06 changes. Clean-checkout reproduction of the finished assignment, matching HTTP behavior, Detective access isolation, live service timeout execution and shutdown with active PostgreSQL clients remain unverified.
+Phase 07 reran test:db: **30 subtests passed**, plus the parent (31 passes), one fresh-case skip, zero failures. Test:api passed **14 subtests**, plus the parent (15 passes), zero failures/skips. It executes real HTTP/SQL for all 90 pairs in both directions, complete literal rankings, reasons/details, repeat ordering, validation before reads, absent/empty subjects, zero-skill candidates, rounded-score ties and two-client snapshot isolation. Real termination, exhaustion of all five clients, blocked-SELECT statement timeout, missing table and read-permission loss produce safe failures and recovery. A scorer exception is deliberately injected after real reads to verify generic 500 and release before scoring.
 
-The real `.env`, generated `dist/`, `node_modules/`, assignment PDF and internal planning files are ignored. Include the placeholder-only `.env.example` and package-lock.json in the reviewed submission. AI assisted planning, scaffolding, handwritten schema/seed and matching implementation, tests, documentation, review and debugging. Phase 07 has not started.
+The first HTTP suite run exposed an unhandled checked-out client connection error. Capturing client error events during snapshots/readiness and discarding damaged clients fixed it; the expanded suite passed afterward. Runtime startup/readiness changes required no new migration or ledger privileges. Applied SQL and the assignment fixture/policy remain unchanged. Finished-assignment clean-checkout reproduction, Detective access isolation, shutdown with active PostgreSQL work and final submission review remain unverified.
+
+The real `.env`, generated `dist/`, `node_modules/`, assignment PDF and internal planning files are ignored. Include the placeholder-only `.env.example` and package-lock.json in the reviewed submission. AI assisted planning, scaffolding, handwritten schema/seed/repositories and matching/API implementation, tests, documentation, review and debugging. Phase 08 has not started; SQL Detective remains pending.

@@ -3,19 +3,34 @@ import { createServer } from 'node:net';
 import { mock, test } from 'node:test';
 import { createApp } from '../src/app.js';
 import { readConfig } from '../src/config.js';
-import { createDatabase, DatabaseTargetError } from '../src/db.js';
+import type { PoolClient } from 'pg';
+import { createDatabase, DatabaseSchemaError, DatabaseTargetError } from '../src/db.js';
 import type { LogEntry } from '../src/logger.js';
 import { serve, testDatabaseUrl } from './helpers.js';
 
 void test('the probe rejects a wrong connected target and empty result (query double, no PostgreSQL)', async (t) => {
   const database = createDatabase(readConfig({ DATABASE_URL: testDatabaseUrl }), () => {});
   t.after(() => database.close());
-  const query = mock.method(database.pool, 'query', () => Promise.resolve({ rows: [{ database_name: 'sql_detective' }] }));
+  let result: object[] = [{ database_name: 'sql_detective', runtime_role: true }];
+  const client = { query: mock.fn(() => Promise.resolve({ rows: result })), release: mock.fn(),
+    on: mock.fn(), removeListener: mock.fn() };
+  mock.method(database.pool, 'connect', () => Promise.resolve(client as unknown as PoolClient));
   await assert.rejects(database.checkReady(), DatabaseTargetError);
-  query.mock.mockImplementation(() => Promise.resolve({ rows: [] }));
+  result = [];
   await assert.rejects(database.checkReady(), DatabaseTargetError);
-  query.mock.mockImplementation(() => Promise.resolve({ rows: [{ database_name: 'recruiter_bot' }] }));
+  result = [{ database_name: 'recruiter_bot', runtime_role: false }];
+  await assert.rejects(database.checkReady(), DatabaseTargetError);
+  let call = 0;
+  client.query.mock.mockImplementation(() => {
+    call++;
+    return Promise.resolve({ rows: call === 1 ? [{ database_name: 'recruiter_bot', runtime_role: true }]
+      : call === 3 ? Array.from({ length: 5 }, () => ({ readable: true, writable: false })) : [{ safe: true }] });
+  });
   await database.checkReady();
+  assert.equal(client.release.mock.callCount(), 4);
+  client.query.mock.mockImplementation(() => Promise.resolve({ rows: [{ database_name: 'recruiter_bot', runtime_role: true }] }));
+  await assert.rejects(database.checkReady(), DatabaseSchemaError);
+  assert.equal(client.release.mock.callCount(), 5);
 });
 
 void test('idle pool errors are consumed and logged without raw driver information', (t) => {

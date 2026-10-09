@@ -1,10 +1,12 @@
-type Diagnostic = 'configuration' | 'database_target' | 'database_unavailable' | 'listener' | 'internal';
+import type { ErrorCode } from './errors.js';
+
+type Diagnostic = 'configuration' | 'database_target' | 'database_unavailable' | 'database_schema' | 'listener' | 'internal';
 
 // Closed fields keep arbitrary URLs, driver messages and error objects out of logs.
 export type LogEntry =
   | { event: 'http_request'; requestId: string; method: string;
-      route: '/health' | '/ready' | 'unmatched'; status: number; durationMs: number;
-      code: 'OK' | 'ROUTE_NOT_FOUND' | 'DATABASE_NOT_READY' | 'INTERNAL_ERROR' }
+      route: '/health' | '/ready' | '/jobs/:id/matches' | '/candidates/:id/matches' | 'unmatched'; status: number; durationMs: number;
+      code: 'OK' | ErrorCode }
   | { event: 'startup_failed'; category: Diagnostic; invalidFields?: string[] }
   | { event: 'database_pool_error' | 'database_close_failed'; category: 'database_unavailable' }
   | { event: 'server_listening'; port: number }

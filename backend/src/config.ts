@@ -20,7 +20,7 @@ export function readConfig(env: NodeJS.ProcessEnv): Config {
     const url = new URL(databaseUrl);
     if (
       !['postgres:', 'postgresql:'].includes(url.protocol) ||
-      !url.hostname || !url.username || !url.password ||
+      !url.hostname || decodeURIComponent(url.username) !== 'recruiter_bot_app' || !url.password ||
       decodeURIComponent(url.pathname) !== '/recruiter_bot' ||
       url.search !== '' || url.hash !== '' ||
       (url.port !== '' && (!/^[1-9][0-9]*$/.test(url.port) || Number(url.port) > 65535))
