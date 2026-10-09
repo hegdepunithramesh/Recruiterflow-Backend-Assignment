@@ -1,52 +1,60 @@
 # Recruiter Bot backend
 
-Section B backend through **Phase 09 final verification**. Recruiter Bot ingestion, handwritten relational storage and both matching APIs are verified. The separate original Detective fixture, all four required SQL answers and window-function bonus are verified. Clean-checkout reproduction and active-database shutdown checks passed on PostgreSQL **18.6**. Final successful runs: **187 passes, zero failures, zero skips** — 116 unit/infrastructure, 32 storage, 15 API, 19 Detective and five shutdown tests (Node parent tests included). Reviewer repository access remains unverified; details and Windows signal limitations appear below.
-
-## Observed verification — 9 October 2026
-
-The user reported these results from the local backend:
-
-| Check | Observed result |
-| --- | --- |
-| PostgreSQL | 18.6 installed and accepting connections at 127.0.0.1:5432 |
-| Database / login | recruiter_bot and the restricted recruiter_bot_app login created |
-| Backend startup | Started successfully |
-| GET /health | HTTP 200 `{"status":"ok"}` |
-| GET /ready | HTTP 200 `{"status":"ready"}` |
-
-These earlier user observations verify startup and connectivity/target. Phase 07 agent verification separately confirmed schema/readiness and both matching endpoints against the development database. The disposable-database HTTP suite exercised all 90 fixture pairs, safe failures, actual connection loss, acquisition/statement timeouts and snapshot consistency. Shutdown after those live requests closed the real pool. Phase 09 subsequently verified shutdown with active PostgreSQL work on a fresh isolated instance, as recorded below.
+This directory contains Section B's Recruiter Bot API and independent SQL Detective solution. For the project overview and matching trade-offs, see the [root README](../README.md).
 
 ## Prerequisites and installation
 
-Tested with Node.js **22.15.0** and npm **11.18.0** on Windows PowerShell 5.1. Node 22 is a supported Maintenance LTS line; the recorded patch reproduces this machine, rather than asserting it is the newest security patch. Use a current supported Node 22 patch for ongoing work. Node 24 meets the declared engines but was not tested here. Dependencies are pinned in package.json and package-lock.json.
+Use Node.js `^22.13.0 || ^24.0.0`, npm 11 and a running PostgreSQL server. You need an owner login for database creation and offline setup, plus a restricted login for HTTP requests. Recorded verification used Node.js 22.15.0, npm 11.18.0, PostgreSQL 18.6 and Windows PowerShell 5.1; Node.js 24 was not exercised.
 
-From the repository root in PowerShell:
+Commands below run **from `backend/` in PowerShell**, unless stated otherwise. Use `npm`/`curl`/`cp` on other shells instead of `npm.cmd`/`curl.exe`/`Copy-Item`. PostgreSQL's `psql` must be available; the Windows examples use its installation path.
 
 ```powershell
-Set-Location backend
+# From the repository root:
+cd backend
 npm.cmd ci --ignore-scripts
-Copy-Item -LiteralPath .env.example -Destination .env
+Copy-Item .env.example .env
 ```
 
-Copy the example only on first setup; preserve an existing `.env`. Edit `.env` locally with the database role/password from the next section. Real environment files are ignored. On shells without PowerShell, use `cd backend`, `npm ci --ignore-scripts` and `cp .env.example .env` instead. Installation needs npm registry access.
+Copy the example only when creating a new local configuration. Dependencies are installed from [package-lock.json](package-lock.json); `--ignore-scripts` was used successfully in the recorded clean installation.
 
-## Native PostgreSQL 18 setup on Windows
+## Environment variables
 
-PostgreSQL **18.6** is installed and accepting connections on the verified local environment. The setup major is pinned to **18**. For another machine, use the [official Windows download route](https://www.postgresql.org/download/windows/) for PostgreSQL 18.x. This project uses native PostgreSQL; no Compose file is included. The commands below describe setup and verification without requiring machine PATH changes.
+Edit the local `.env` using the placeholder formats in [.env.example](.env.example). Replace `YOUR_DB_OWNER` with the actual owner login and `YOUR_URL_ENCODED_PASSWORD` with the appropriate password, percent-encoding special characters in credentials. The owner and runtime logins have separate passwords. Keep credentials local; `.env` is ignored.
 
-For the standard installation path, check the server/tools using absolute paths, without changing machine PATH or services:
+| Variable | Purpose and accepted values |
+| --- | --- |
+| `DATABASE_URL` | Required for the API and Bot offline tools. A credentialed PostgreSQL URL for exactly `recruiter_bot_app` on `recruiter_bot`. This is the restricted runtime connection. |
+| `ADMIN_DATABASE_URL` | Required for `db:migrate`, `db:seed` and `db:verify`. A separate owner login on `recruiter_bot`, using the same hostname and port as `DATABASE_URL`. The HTTP server does not use it. |
+| `PORT` | Optional HTTP port, an integer from 1 to 65535 without leading zeros. Default: `3000`. The listener binds to `127.0.0.1`. |
+| `NODE_ENV` | Optional: `development`, `test` or `production`. Default: `development`. |
+| `TEST_ADMIN_DATABASE_URL` | Optional for Bot integration tests only. Owner login targeting exactly the disposable `recruiter_bot_phase05_test` database on the same hostname/port as `DATABASE_URL`. |
+| `DETECTIVE_DATABASE_URL` | Required only for Part 2 commands/tests. Separate owner login targeting exactly `sql_detective`; the Bot runtime login is rejected. The HTTP server does not use it. |
+
+The three database names are enforced by code. Bot tests derive their runtime URL from `DATABASE_URL` by replacing only the database name; the restricted login and its password stay the same. PostgreSQL roles belong to the server instance, so the test database uses the existing `recruiter_bot_app` role.
+
+URLs accept `postgres://` or `postgresql://` with host, login and password. URL query parameters and fragments are rejected. Existing process environment values take precedence over `.env`; clear stale overrides if local edits appear ineffective. Unused test/Detective variables may be omitted until needed.
+
+## Create the application database
+
+Start PostgreSQL and connect as an owner capable of creating a database and login. The following assumes the local `postgres` owner and PostgreSQL 18 on `127.0.0.1:5432`; adjust the executable path, host, port and owner to your installation. `-W` prompts for the owner's password without putting it in the command.
 
 ```powershell
 $pgBin = 'C:\Program Files\PostgreSQL\18\bin'
-& "$pgBin\psql.exe" --version
-& "$pgBin\pg_isready.exe" -h 127.0.0.1 -p 5432
 & "$pgBin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d postgres -W
 ```
 
-In that interactive psql session, on a fresh local instance only, create the empty Bot database and a restricted runtime login. `\password` prompts without placing a password in SQL or shell history:
+Inside psql, inspect existing names first:
 
 ```sql
-CREATE ROLE recruiter_bot_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+SELECT rolname FROM pg_roles WHERE rolname = 'recruiter_bot_app';
+SELECT datname FROM pg_database WHERE datname = 'recruiter_bot';
+```
+
+For a fresh setup, run the following. Execute each CREATE statement only if that object is absent; inspect existing objects and their permissions before reusing them.
+
+```sql
+CREATE ROLE recruiter_bot_app
+  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
 \password recruiter_bot_app
 CREATE DATABASE recruiter_bot;
 REVOKE ALL ON DATABASE recruiter_bot FROM PUBLIC;
@@ -54,19 +62,16 @@ GRANT CONNECT ON DATABASE recruiter_bot TO recruiter_bot_app;
 \connect recruiter_bot
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO recruiter_bot_app;
-SHOW server_version;
 \quit
 ```
 
-The verified local environment already has this database/login; skip creation there. If the role/database exists on another machine, inspect it instead of dropping/resetting anything. These commands create no domain tables. Offline migrations/seeds use a separate database/schema owner login and grant the runtime role domain SELECT permissions. The runtime login must not own the database/schema or inherit other roles. The separate Detective database and its permission boundary are documented below.
+`\password` prompts for the runtime password. The connected owner owns the new database. Configure `DATABASE_URL` with the runtime login and `ADMIN_DATABASE_URL` with that owner, both targeting `recruiter_bot`.
 
-Set `DATABASE_URL` in `.env` to **recruiter_bot_app** targeting `/recruiter_bot`. Set `ADMIN_DATABASE_URL` to a separate privileged database/schema owner login targeting that same database. Only offline migrate/seed/verify commands read the owner connection; HTTP startup does not. Never replace the runtime login with an owner or paste/commit credentials.
-
-Percent-encode special characters in credentials. The example contains placeholders only. Credentialed `postgres:`/`postgresql:` URLs with the exact database name are required; URL query parameters/fragments are rejected. Offline owner/runtime URLs must use the same hostname and port. `PORT` defaults to 3000 and accepts canonical integers 1–65535; `NODE_ENV` defaults to development and accepts development/test/production. Existing process environment takes precedence over `.env`.
+The runtime role must be a nonowner login without elevated role attributes or any role memberships. Migration SQL grants CONNECT, schema USAGE and SELECT on the five domain tables, and revokes writes, DDL, temporary-table access, sequence access and migration-ledger access. Do not use the owner login as `DATABASE_URL`.
 
 ## Migrate, seed and verify
 
-From `backend/`, with both connections configured:
+From `backend/`, after configuring both Bot URLs:
 
 ```powershell
 npm.cmd run db:migrate
@@ -74,91 +79,82 @@ npm.cmd run db:seed
 npm.cmd run db:verify
 ```
 
-`db:migrate` applies ordered handwritten SQL and records SHA-256 checksums in a private `schema_migrations` ledger. All pending migrations and ledger writes share one transaction. Matching history makes reruns a no-op; changed, missing or unknown applied versions fail. Keep applied files immutable and add a new numbered file for changes. `.gitattributes` preserves LF migration bytes across checkouts. Conflicting existing domain tables fail rather than being silently accepted. There is no automatic down/reset command.
+[Handwritten migrations](sql/migrations/) create candidates, jobs, canonical skills, candidate/job skill junctions and a private migration ledger. Pending migrations run transactionally with an advisory lock. Versions and SHA-256 checksums make an unchanged rerun a no-op; changed or missing applied migration history is rejected. Keep applied migration files unchanged.
 
-The schema contains candidates, jobs, canonical skills and two association tables. Availability, traits, quirks, culture keywords and taglines are retained. Constraints enforce positive IDs, nonnegative integer years, nonblank required text, availability values, canonical unique skills, unique associations and foreign keys. Metadata arrays are descriptive lists; ingestion validates their shape and rejects empty job skills. Five primary-key indexes and the unique skill-name index suffice for this fixture. The pure engine computes matches from pairs without storing results.
+[assignment.json](data/assignment.json) preserves all sample profiles and metadata. Candidate IDs 1–15 and job IDs 1–6 follow the supplied order. Skill labels are trimmed, lowercased and deduplicated. A seed rerun restores fixture fields and relationships while retaining unrelated records; a conflicting name/title at a reserved fixture ID causes failure. Sequence reconciliation avoids collisions with existing larger IDs.
 
-`db:seed` validates the complete fixture before writing, then ingests it transactionally. Candidate IDs **1–15** and job IDs **1–6** follow PDF order and are reserved for those fixtures. A different name/title at a reserved ID aborts. Reruns restore fixture-owned fields and replace only their skill links; unrelated owners/links and unused skills survive. Skills are trimmed, lowercased and deduplicated. The identity sequence advances past existing explicit IDs and never rewinds. PostgreSQL sequence changes can leave gaps after rollback; table changes still roll back. Migration/seed writers serialize through the same advisory lock.
+`db:verify` checks migration history, exact fixture fields/relationships and effective runtime permissions using both connections. Fresh totals are **15 candidates, six jobs, 27 skills, 50 candidate-skill links and 16 job-skill links**. Unrelated records can increase totals. Offline commands print a safe JSON result and exit nonzero on failure; the HTTP server never performs setup writes.
 
-`db:verify` checks migration history through the owner connection, then compares every fixture field and skill set through the actual runtime login in a read-only snapshot. It checks effective permissions too. Fresh-database totals are:
-
-```json
-{"candidates":15,"jobs":6,"skills":27,"candidate_skills":50,"job_skills":16}
-```
-
-Unrelated data may increase totals without invalidating the fixture. Commands emit safe status/counts and exit nonzero on failure, without printing connection URLs or raw driver details.
-
-Migration permissions grant runtime database CONNECT, public-schema USAGE and SELECT on the five domain tables. Ledger access, sequence access, writes, schema creation and temporary-table creation are denied, including inherited PUBLIC grants on this dedicated database. Commands do not elevate or alter global role attributes.
-
-## Matching algorithm v1
-
-The pure engine in `src/modules/matching/policy.ts` uses **score = 80 × S + 20 × E**, where S is the fraction of distinct required job skills covered by the candidate, and E is `min(candidate years / minimum years, 1)`. A zero-year minimum gives E = 1. For example, Sheldon C. covers one of Backend Detective's three skills and has nine years against a three-year minimum: `80 × 1/3 + 20 × 1 = 46.666…`, displayed as **46.67**. His explanation is `Matched 1 of 3 required skills; 9 years experience meets the 3-year minimum.` Both ranking directions use this same pair scorer and reason.
-
-Rank by unrounded score descending, then skill coverage descending, then counterpart ID ascending. Only the final displayed score uses decimal half-up rounding to hundredths; names and rounded values never determine order. Skills are trimmed, lowercased and deduplicated, preserving internal spaces/hyphens without synonyms. Invalid skills/experience and empty job requirements fail with a domain error; empty candidate skills are valid. Ranking validates subjects even when there are no counterparts and never returns a partial ranking after invalid input.
-
-The 80/20 weights are an explainable heuristic, not a calibrated hiring probability. Extra candidate skills do not penalize fit; experience above the minimum earns no further bonus. All counterparts remain eligible, including zero-score and `Not looking` candidates. Availability is preserved; traits, culture, quirks and taglines add no subjective weights. This can rank unavailable candidates highly. The module uses type-only views of existing fixture types and has no runtime imports, database, environment or network access. HTTP routes and SQL repositories are not part of Phase 06.
-
-## Run and check
-
-From `backend/`:
+## Run the API
 
 ```powershell
-npm.cmd run typecheck
-npm.cmd run lint
-npm.cmd test
 npm.cmd run build
 npm.cmd start
 ```
 
-Use `npm.cmd run dev` for TypeScript watch mode. The service listens on **127.0.0.1**. Startup requires the configured/connected recruiter_bot database and recruiter_bot_app login, restricted effective permissions, and all columns used by the repositories. Missing/invalid configuration, an unavailable database or missing schema/read grants exits with code 1 and a safe JSON diagnostic. Schema/permission failures use the `database_schema` category; port conflicts use `listener`. Startup performs only reads. Run offline migrate/seed/verify beforehand: the runtime cannot inspect migration-ledger contents/checksums.
+For development with source watching, use `npm.cmd run dev`. Startup validates configuration, actual database/login, required schema and effective privileges before opening the listener. It does not inspect the private migration ledger or certify fixture totals; use `db:verify` for those checks.
 
-After successful startup, from another terminal:
-
-```powershell
-curl.exe -i http://127.0.0.1:3000/health
-curl.exe -i http://127.0.0.1:3000/ready
-```
-
-Both probes returned the documented HTTP 200 bodies in Phase 07 live checks. `/health` operates independently of the database. `/ready` now repeats startup's connected-target, runtime-role, effective-permission and required-column checks. A failed probe returns 503 `DATABASE_NOT_READY` with message `Database is not ready.` It inspects privilege metadata without reading private ledger rows. Offline `db:verify` remains the migration-history/fixture check; readiness permits valid empty counterpart tables and does not certify fixture loading. All responses have a generated `X-Request-Id` and `Cache-Control: no-store`.
-
-Stop with Ctrl+C/SIGINT or SIGTERM. Shutdown stops accepting requests, drains in-flight work and closes the pool, with a ten-second deadline. The pool has at most five clients, a two-second connection/acquisition timeout, a two-second PostgreSQL statement timeout and a three-second client query timeout; there are no automatic retries. Logs omit raw paths/query strings, driver messages, SQL, connection URLs and stacks.
-
-Historical Phase 07 checks passed 101 unit/infrastructure tests on 9 October. Phase 09's clean clone passed build/typecheck/lint and all **116 unit/infrastructure tests**, zero failures/skips, including the policy, service, readiness and Detective checks. Signal tests use child-process IPC on Windows; real PostgreSQL suites run separately below.
-
-## Matching API demonstration
-
-After startup, run these from another terminal (replace 3000 if PORT was changed):
+In another terminal:
 
 ```powershell
-curl.exe -sS -i http://127.0.0.1:3000/jobs/1/matches
-curl.exe -sS -i http://127.0.0.1:3000/candidates/1/matches
-curl.exe -sS -i http://127.0.0.1:3000/jobs/2/matches
-curl.exe -sS -i http://127.0.0.1:3000/jobs/01/matches
-curl.exe -sS -i http://127.0.0.1:3000/candidates/2147483647/matches
-curl.exe -sS -i "http://127.0.0.1:3000/jobs/1/matches?limit=1"
+curl.exe -i "http://127.0.0.1:3000/health"
+curl.exe -i "http://127.0.0.1:3000/ready"
 ```
 
-All six requests were executed with curl against recruiter_bot on an owned ephemeral port **50395**, using the compiled backend and actual recruiter_bot_app login. The first two returned 200 with all 15 candidates and six jobs; their complete bodies matched the agreed examples. Development db:verify passed before and after; no migrations/seeds or other writes were needed. The owned service was stopped and its pool closed.
+Expected healthy responses are HTTP 200 with `{"status":"ok"}` and `{"status":"ready"}`, respectively. Readiness repeats the database/schema/permission checks and returns 503 if they fail. The server handles SIGINT/SIGTERM by stopping new connections, draining requests and closing the database pool, with a ten-second deadline. Native Windows console signal delivery has not been verified; see the test evidence below.
 
-Job 1 returns candidate IDs **1,9,2,3,4,5,6,7,8,10,11,12,13,14,15**: Sherlock scores 100, Sheldon 46.67, the rest 20. This excerpt shows the first two of the 15 matches:
+## API examples
+
+Both routes are GET requests with no query parameters:
+
+```powershell
+curl.exe -i "http://127.0.0.1:3000/jobs/1/matches"
+curl.exe -i "http://127.0.0.1:3000/candidates/1/matches"
+```
+
+Job 1 returns 15 matches. The following valid JSON is an **excerpt containing the first two**, with the remaining matches omitted:
 
 ```json
 {
   "policyVersion": "v1",
-  "subject": {"type":"job","id":1,"label":"Backend Detective","availability":null},
+  "subject": {
+    "type": "job",
+    "id": 1,
+    "label": "Backend Detective",
+    "availability": null
+  },
   "matches": [
-    {"type":"candidate","id":1,"label":"Sherlock H.","availability":"Immediate","score":100,"reason":"Matched 3 of 3 required skills; 8 years experience meets the 3-year minimum."},
-    {"type":"candidate","id":9,"label":"Sheldon C.","availability":"Immediate","score":46.67,"reason":"Matched 1 of 3 required skills; 9 years experience meets the 3-year minimum."}
+    {
+      "type": "candidate",
+      "id": 1,
+      "label": "Sherlock H.",
+      "availability": "Immediate",
+      "score": 100,
+      "reason": "Matched 3 of 3 required skills; 8 years experience meets the 3-year minimum."
+    },
+    {
+      "type": "candidate",
+      "id": 9,
+      "label": "Sheldon C.",
+      "availability": "Immediate",
+      "score": 46.67,
+      "reason": "Matched 1 of 3 required skills; 9 years experience meets the 3-year minimum."
+    }
   ]
 }
 ```
 
-Candidate 1 returns this complete body:
+Candidate 1 returns this full response:
 
 ```json
 {
   "policyVersion": "v1",
-  "subject": {"type":"candidate","id":1,"label":"Sherlock H.","availability":"Immediate"},
+  "subject": {
+    "type": "candidate",
+    "id": 1,
+    "label": "Sherlock H.",
+    "availability": "Immediate"
+  },
   "matches": [
     {"type":"job","id":1,"label":"Backend Detective","availability":null,"score":100,"reason":"Matched 3 of 3 required skills; 8 years experience meets the 3-year minimum."},
     {"type":"job","id":2,"label":"Rapid Prototyping Engineer","availability":null,"score":20,"reason":"Matched 0 of 2 required skills; 8 years experience meets the 2-year minimum."},
@@ -170,72 +166,54 @@ Candidate 1 returns this complete body:
 }
 ```
 
-Job 2 includes all candidates; its top tied IDs are **3,6,8**, each at 100. Tony's availability remains `Not looking`. There is no threshold, filtering, top-k or pagination. Scores/reasons are identical for each pair in both directions; ranks depend on the subject. Scores are JSON numbers rounded to two decimal places at most, rather than fixed-width strings. A valid subject with no counterparts returns 200 with `matches: []`.
-
-IDs must be decoded ASCII positive integers 1–2147483647 without leading zeros; ID validation runs before query validation or SQL. Any matching-route query parameter is rejected. Error responses use:
+Every response has a generated `X-Request-Id` and `Cache-Control: no-store`. Errors have this envelope; the UUID here is illustrative and changes per request:
 
 ```json
-{"error":{"code":"INVALID_ID","message":"id must be a positive integer between 1 and 2147483647 without leading zeros.","requestId":"88b1589b-c428-421d-93de-030a472ded31"}}
+{
+  "error": {
+    "code": "INVALID_ID",
+    "message": "id must be a positive integer between 1 and 2147483647 without leading zeros.",
+    "requestId": "88b1589b-c428-421d-93de-030a472ded31"
+  }
+}
 ```
-
-The UUID above is illustrative; each error's requestId equals its generated X-Request-Id header and log correlation ID. Incoming request IDs are not adopted.
-
-| HTTP | Code | Message / trigger |
-| --- | --- | --- |
-| 400 | INVALID_ID | id must be a positive integer between 1 and 2147483647 without leading zeros. |
-| 400 | INVALID_QUERY | Query parameters are not supported. |
-| 404 | JOB_NOT_FOUND | Job not found. |
-| 404 | CANDIDATE_NOT_FOUND | Candidate not found. |
-| 404 | ROUTE_NOT_FOUND | Route not found. (including missing path segments) |
-| 503 | DATABASE_UNAVAILABLE | Matching is temporarily unavailable. Please try again later. (known connection loss/refusal, acquisition/statement timeout or shutdown) |
-| 500 | INTERNAL_ERROR | An unexpected error occurred. (unexpected SQL/programming failure or invalid loaded profiles) |
-
-The last three curl examples returned 400 INVALID_ID, 404 CANDIDATE_NOT_FOUND and 400 INVALID_QUERY. Neither database failures nor missing subjects become empty success. No partial ranking is returned after any failure, and there are no automatic retries. Errors/logs omit SQL, driver details and credentials.
-
-For `/jobs/1/matches`, the controller validates the HTTP input, then the service checks out one client and begins a read-only REPEATABLE READ transaction. A parameterized subject SELECT and one aggregate SELECT for all candidate skills use left joins, retaining zero-skill candidates. Full profile validation runs before commit/release. The unchanged pure ranker scores each pair once and orders by raw score, coverage and ID; the controller emits only the contract fields. The reverse route follows the same flow. Each successful request uses two data SELECTs plus transaction control, a missing subject one, and invalid input zero. This snapshot costs transaction round trips but prevents mixing concurrent commits; computed matches avoid stale stored results.
-
-## Disposable database checks
-
-For real failure/constraint tests, create a separate **empty, explicitly disposable** database as the owner through interactive psql connected to postgres:
-
-```sql
-CREATE DATABASE recruiter_bot_phase05_test;
-```
-
-Set `TEST_ADMIN_DATABASE_URL` locally to the owner connection for that exact database, on the same hostname/port as the runtime instance. Then run:
 
 ```powershell
-npm.cmd run test:db
-npm.cmd run test:api
-npm.cmd run test:shutdown
+curl.exe -i "http://127.0.0.1:3000/jobs/01/matches"
+curl.exe -i "http://127.0.0.1:3000/candidates/2147483647/matches"
+curl.exe -i "http://127.0.0.1:3000/jobs/1/matches?limit=1"
 ```
 
-Run these suites sequentially because they share the disposable database. Storage/API suites guard the actual target before writes and derive the test runtime connection from DATABASE_URL by replacing only the database name. They accept an empty database or its existing six-table baseline and never drop/reset a database. Storage failure variants roll back; HTTP variants commit test-only changes visible to the runtime, then restore affected tables/permissions and reseed/verify the baseline in finally blocks. Do not interrupt tests mid-variant. Missing/unsafe configuration fails visibly. On rerun, the storage fresh-database case is explicitly skipped because migrations already exist.
+These return 400 `INVALID_ID`, 404 `CANDIDATE_NOT_FOUND` and 400 `INVALID_QUERY` on the supplied fixture. IDs are ASCII positive integers from 1 to 2147483647 without leading zeros; ID validation precedes query validation and database access.
 
-Real PostgreSQL checks covered fresh migration, migration/seed reruns, exact fields/relationships, checksum mismatch rejection, constraints, rollback after partial migration/seed writes, unrelated-row preservation, sequence reconciliation, concurrent seeds and actual runtime denial of ledger reads/writes/DDL/sequence access. The initial run passed fresh migration/rollback but found one test expecting the older foreign-key error code for RESTRICT; corrected to PostgreSQL 18's `23001`. The subsequent suite passed **30 database subtests**, with the already-executed fresh case skipped (Node reports 31 passes including the parent test, one skip, zero failures).
+| HTTP status | Code | Meaning |
+| --- | --- | --- |
+| 400 | `INVALID_ID` / `INVALID_QUERY` | Invalid ID or unsupported query parameters. |
+| 404 | `JOB_NOT_FOUND` / `CANDIDATE_NOT_FOUND` | Valid ID with no matching subject. |
+| 404 | `ROUTE_NOT_FOUND` | Unknown route. |
+| 503 | `DATABASE_NOT_READY` | Readiness check failed. |
+| 503 | `DATABASE_UNAVAILABLE` | Matching connection, acquisition or statement timeout, or database shutdown. |
+| 500 | `INTERNAL_ERROR` | Unexpected failure, including invalid loaded profiles. |
 
-Phase 07 reran test:db: **30 subtests passed**, plus the parent (31 passes), one fresh-case skip, zero failures. Test:api passed **14 subtests**, plus the parent (15 passes), zero failures/skips. It executes real HTTP/SQL for all 90 pairs in both directions, complete literal rankings, reasons/details, repeat ordering, validation before reads, absent/empty subjects, zero-skill candidates, rounded-score ties and two-client snapshot isolation. Real termination, exhaustion of all five clients, blocked-SELECT statement timeout, missing table and read-permission loss produce safe failures and recovery. A scorer exception is deliberately injected after real reads to verify generic 500 and release before scoring.
+An existing subject with no counterparts returns 200 and `matches: []`. Failures produce no partial ranking and are not retried automatically. Response and application-log errors omit credentials, SQL and raw driver details. Ranking behavior and trade-offs are described in the [root README](../README.md#architecture-and-matching-decisions).
 
-The first HTTP suite run exposed an unhandled checked-out client connection error. Capturing client error events during snapshots/readiness and discarding damaged clients fixed it; the expanded suite passed afterward. Runtime startup/readiness changes required no new migration or ledger privileges. Applied SQL and the assignment fixture/policy remain unchanged. Phase 09 completed clean-checkout reproduction and active-database shutdown checks. Both the effective Detective CONNECT guard and an actual refused Bot login connection passed. Reviewer repository access remains unverified.
+## SQL Detective setup and answers
 
-## SQL Detective: separate setup and answers
+The answer file is [sql_detective.sql](sql_detective.sql). It contains five numbered, read-only queries, including the bonus. [sql/detective/setup.sql](sql/detective/setup.sql) is separate: it preserves the supplied four tables, 20 columns and **47 rows** (five recruiters, seven postings, 11 applicants, 24 interviews). Only the supplied primary keys are added; other columns retain their original nullability. [sql-detective.json](data/sql-detective.json) is an independent verification reference, not a SQL generator.
 
-The submitted [sql_detective.sql](sql_detective.sql) contains **five executable read-only queries**, each preceded by its question-number comment; Question 5 is the bonus. [Setup SQL](sql/detective/setup.sql) is separate and preserves the PDF's four original tables and all **47 rows**: five recruiters, seven postings, 11 applicants and 24 interviews. Only the four supplied primary keys are present; all other fields remain nullable, with no added foreign keys/checks/indexes or cleaned identities. A separate JSON reference verifies every loaded field and is not used to generate SQL.
-
-Create **sql_detective** separately from recruiter_bot. From PowerShell, connect interactively as the database owner (postgres on the verified local installation):
+After creating the Bot role, reconnect as the owner to `postgres`:
 
 ```powershell
 $pgBin = 'C:\Program Files\PostgreSQL\18\bin'
 & "$pgBin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d postgres -W
 ```
 
-In psql, inspect existence first. Run CREATE DATABASE only if absent; an existing database must be inspected, never reset:
+Inside psql:
 
 ```sql
 SELECT datname FROM pg_database WHERE datname = 'sql_detective';
--- Only if absent:
+-- Execute CREATE only if absent; inspect any existing database before reuse.
 CREATE DATABASE sql_detective;
--- For this dedicated assignment database, isolate the Bot login:
 REVOKE ALL ON DATABASE sql_detective FROM PUBLIC, recruiter_bot_app;
 \connect sql_detective
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
@@ -243,72 +221,129 @@ REVOKE ALL ON SCHEMA public FROM recruiter_bot_app;
 \quit
 ```
 
-The owner retains access; runtime recruiter_bot_app must have no effective CONNECT to sql_detective. If using another owner, connect as that actual owner. These changes concern only the Detective database, not Bot data or global role attributes. The offline guard fails with BOT_DATABASE_ISOLATION if PUBLIC/direct/inherited privileges still permit Bot access.
+Use the actual owner if it differs from `postgres`. Set `DETECTIVE_DATABASE_URL` locally to that owner on exactly `sql_detective`. Keep the runtime connection on `recruiter_bot_app/recruiter_bot`. The Detective guard checks the actual database/login and requires the Bot role to have no effective CONNECT privilege; the HTTP server never uses this connection.
 
-Add DETECTIVE_DATABASE_URL locally in backend/.env using a separate owner login, targeting exactly `/sql_detective`. The placeholder format is in .env.example. Keep DATABASE_URL on recruiter_bot_app/recruiter_bot. Do not substitute the Bot URL, target its disposable test database, paste credentials into commands or commit the real env file. Detective config rejects wrong targets, the Bot login, URL query parameters/fragments and malformed credentialed URLs. The HTTP server never reads this connection.
-
-From backend/:
+From `backend/`:
 
 ```powershell
 npm.cmd run detective:load
 npm.cmd run detective:verify
 npm.cmd run detective:answers
+```
+
+The loader initializes an empty public schema in one transaction. An exact existing fixture returns `already_loaded` without data writes. Partial or altered fixtures are rejected without reset, cleanup or merge. Verification checks the exact schema and every original value, including case differences and NULLs. Verification and answer execution use read-only snapshots.
+
+No HTTP server is required. To execute the answer file directly after loading and verification:
+
+```powershell
+& "$pgBin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d sql_detective -W -X -v ON_ERROR_STOP=1 -f .\sql_detective.sql
+```
+
+After `npm.cmd run build`, the compiled CLI also works:
+
+```powershell
+node --env-file-if-exists=.env dist/detective/cli.js answers
+```
+
+Keep the versioned SQL and data directories alongside the build; compiled tools resolve those same assets.
+
+## SQL Detective assumptions and results
+
+1. **Open postings:** stored `status = 'open'` is authoritative. Duplicate titles remain distinct posting IDs, joined to their owning recruiter.
+2. **Applicants reaching Final:** count distinct applicant records per posting across all Final outcomes. Repeated interviews count once for that applicant/posting; a left join retains zero-count postings.
+3. **People linked to multiple postings:** trimmed, lowercase email is an identity proxy. Interviews at any stage/outcome evidence a posting link because there is no separate application junction. Count distinct posting IDs, select the smallest applicant ID's name and include all applicant IDs for that identity, even unlinked records. NULL/blank emails remain separate identities keyed by applicant ID; names do not merge people. Source data stays unchanged.
+4. **Recruiter conversion:** count Final interview rows, including repeated, failed, no-show or pending outcomes in the denominator and the inclusive minimum of three. Only passed Finals enter the numerator. Cast to NUMERIC before division and return an unrounded fraction; `pg` represents NUMERIC values as strings. The fixture's pending interview is Technical and does not enter this calculation.
+5. **Department winners:** count passed Final interview rows per department/recruiter. `DENSE_RANK` returns all tied winners; recruiter IDs only order presentation. Departments with no successes are omitted; a NULL department remains its own group.
+
+Questions 2–5 include closed/on-hold postings. Question 2 counts applicant records; Question 3 groups email identities; Questions 4–5 count interview rows. Email is a practical proxy and cannot establish real-world identity reliably.
+
+These five baseline results were verified against the supplied dataset:
+
+| Question | Baseline result |
+| --- | --- |
+| 1 | Posting 1: Backend Engineer I / Priya Shah; 2: Backend Engineer I / Daniel Ortiz; 4: Backend Engineer II / Priya Shah; 5: DevOps Engineer / Wei Zhang. |
+| 2 | Posting IDs 1–7: Final applicant counts **2, 2, 1, 2, 0, 0, 2**. |
+| 3 | `ananya.rao@mail.com` / Ananya Rao: applicant IDs [1, 2], posting IDs [1, 4]; `ben.turner@mail.com` / Ben Turner: [3], [1, 3]; `elena.popescu@mail.com` / Elena Popescu: [6], [2, 7]. Each has job count 2. |
+| 4 | Priya Shah: 3 passed / 4 Final interviews = **0.75**; Daniel Ortiz: 2 / 4 = **0.5**. Other recruiters are below the minimum. |
+| 5 | Data: Fatima Al-Sayed, **1** successful placement; Engineering: Priya Shah, **3**. Infrastructure has no winner. |
+
+## Optional tests
+
+Running the application does not require a test database or Detective configuration. Static checks and unit/infrastructure tests need installed dependencies but no live PostgreSQL:
+
+```powershell
+npm.cmd run typecheck
+npm.cmd run lint
+npm.cmd run build
+npm.cmd test
+```
+
+### Bot integration tests
+
+Use a dedicated, initially empty **disposable** database. Connect as the owner to `postgres`, inspect its existence and create it only if absent:
+
+```sql
+SELECT datname FROM pg_database WHERE datname = 'recruiter_bot_phase05_test';
+CREATE DATABASE recruiter_bot_phase05_test;
+```
+
+Configure `TEST_ADMIN_DATABASE_URL` for the owner of that exact database on the same hostname/port as `DATABASE_URL`. The Bot role must already exist. Run sequentially from `backend/`:
+
+```powershell
+npm.cmd run test:db
+npm.cmd run test:api
+npm.cmd run test:shutdown
+```
+
+Storage and API suites check the actual target before writes and accept an empty database or the expected existing six-table baseline. They never reset the application database. Storage variants roll back; API variants temporarily commit changes in the disposable database so the runtime can observe them, then restore data/permissions and verify the fixture in cleanup. Run these suites only on that disposable database and allow cleanup to finish.
+
+`test:db` covers migrations, seeds, constraints, rollback, checksums, sequences and runtime privilege denial. Its fresh-database case runs once; an already-migrated rerun explicitly skips that case. `test:api` covers HTTP contracts, all 90 pairs in both directions, deterministic ordering, snapshot isolation and real database failure/recovery.
+
+`test:shutdown` requires the baseline prepared by the preceding suites. It does not migrate, seed or edit records; owner locks roll back and fixture checks run before/after. It exercises real in-flight database work and pool closure for both installed signal handlers, timeout during drain and the shutdown deadline. Windows tests invoke handlers via IPC; they do not verify native console signal delivery.
+
+### SQL Detective integration tests
+
+After the separate Part 2 database and owner URL are configured:
+
+```powershell
 npm.cmd run test:detective
 ```
 
-Load creates the original schema/inserts in one transaction only on an empty public schema. A verified exact fixture rerun returns already_loaded without data writes. A partial, altered or conflicting dataset fails without dropping/truncating/merging anything. Verification compares all columns/types/nullability/defaults, primary keys/indexes and every row, including email case and NULLs. No Bot migration ledger or table is added. Answer execution uses one read-only snapshot and prints question numbers/result rows; credentials/raw driver errors are omitted. Tests add isolated edge data in transactions and always roll it back, then verify the original fixture.
+Use only the dedicated `sql_detective` assignment database. The suite loads/verifies the original fixture and introduces transactional edge cases, including schema/data variations, then rolls them back and rechecks the baseline. It checks all five answers, repeated interviews, identity normalization, zeros, conversion thresholds and tied winners. Missing or unsafe live-test configuration fails visibly.
 
-To run the single answer file directly after guarded loading/verification, connect interactively to the separate database and execute it from backend/:
+## Recorded verification
 
-```powershell
-& "$pgBin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d sql_detective -W -v ON_ERROR_STOP=1 -f .\sql_detective.sql
-```
+A clean tracked checkout of revision `5e077a0`, with fresh dependencies and a fresh isolated PostgreSQL 18.6 instance, passed installation, typecheck, lint and build. Application migration/seed/verification, unchanged reruns, compiled startup, API examples, all five Detective answers, compiled Detective execution and direct psql execution also succeeded. The original Detective definitions and values were compared with the assignment; an actual Bot login connection to its database was denied.
 
-No HTTP service is needed for Part 2. Compiled offline commands also work after npm.cmd run build, for example `node --env-file-if-exists=.env dist/detective/cli.js answers`. SQL/JSON files stay in their versioned locations, so compiled code resolves the same assets.
-
-The interpretations are explicit. Q1 uses stored open status. Q2 counts distinct applicant records at Final for every posting, including zeros and all outcomes; repeated interviews do not increase that applicant count. Q3 trims/lowercases email only in the query, groups all records with that identity, and counts distinct interview-linked postings. All stages/outcomes evidence a link, since the schema has no application/posting junction. It uses the smallest applicant ID's name and retains every identity record in applicant_ids, including unlinked records. NULL/blank emails remain separate identities keyed by applicant ID in a separate key column; matching names do not merge people.
-
-Q4 counts Final interview rows, including repeated, failed, no_show and pending rows in both denominator and the inclusive three-interview threshold. Only passed Finals enter the numerator. NUMERIC conversion happens before division; results are fractions, not percentages or explicitly rounded values. PostgreSQL NUMERIC is decoded as a string by pg; its numeric value is checked independently. The supplied pending interview is Technical and is excluded. Q2–Q5 include closed/on-hold postings.
-
-Q5 aggregates passed Final interview rows by department/recruiter, then DENSE_RANK ranks success counts within each department. Rank one returns every tied winner; recruiter ID only orders the final output, so it cannot break a tie. Departments with no successes are omitted; a hypothetical NULL department remains its own group and sorts last. This counts successful interview rows, not deduplicated people or titles. Email identity is a practical fixture assumption, not a guaranteed real-world person identifier.
-
-Verified baseline results from the Phase 08 user-reported suite and Phase 09 clean-checkout PostgreSQL execution; every actual result matched the independent expectation:
-
-| Question | Expected rows | Actual live result |
-| --- | --- | --- |
-| 1 | Open postings: 1 (Backend Engineer I, recruiter 1 Priya Shah), 2 (Backend Engineer I, recruiter 2 Daniel Ortiz), 4 (Backend Engineer II, recruiter 1 Priya Shah), 5 (DevOps Engineer, recruiter 4 Wei Zhang). | VERIFIED: all four rows match. |
-| 2 | Posting IDs 1–7 have Final applicant counts 2/2/1/2/0/0/2. | VERIFIED: all seven rows match, including zeros. |
-| 3 | ananya.rao@mail.com / Ananya Rao: applicant IDs [1,2], jobs [1,4]; ben.turner@mail.com / Ben Turner: [3], jobs [1,3]; elena.popescu@mail.com / Elena Popescu: [6], jobs [2,7]. Each job_count is 2. | VERIFIED: all three identities and lists match. |
-| 4 | Recruiter 1 Priya Shah: 3 passed / 4 Finals = 0.75; recruiter 2 Daniel Ortiz: 2 / 4 = 0.5. Other recruiters excluded. | VERIFIED: both count/rate rows match; SQL NUMERIC division checked. |
-| 5 bonus | Data: recruiter 3 Fatima Al-Sayed, one placement; Engineering: recruiter 1 Priya Shah, three. Infrastructure omitted. | VERIFIED: both winning rows match. |
-
-Historical Phase 08 implementation checks compared every setup/reference value and all four definitions/20 columns directly with PDF pp. 11–13; exact match. Unit/infrastructure tests passed 116, and build/typecheck/lint passed. The user-reported 19-pass live run superseded initial missing-configuration attempts. Phase 09 independently reproduced the exact fixture, all five answers, no-op loader rerun and transactional edges from committed main; compiled answers and direct psql execution also passed. Its guard verified effective Bot CONNECT denial, and an actual Bot connection attempt was denied with 42501. Earlier development Bot db:verify/curl evidence remains historical; Phase 09 exercised the unchanged Bot implementation on a fresh isolated instance.
-
-The real `.env`, generated `dist/`, `node_modules/`, assignment PDF and all local planning/evidence documents in `docs/` are ignored. Submitted READMEs use tracked backend assets and contain essential setup/verification information directly. Include the placeholder-only `.env.example`, SQL/data and package-lock.json in the reviewed submission. AI assisted planning, scaffolding, handwritten schema/seed/repositories, matching/API and Detective implementation, tests, documentation, review, debugging and Phase 09 verification. No other track was started; no staging, commit, push or submission was performed.
-
-## Phase 09 clean-checkout and shutdown evidence — 10 October 2026
-
-Committed main **5e077a0** was cloned separately with only tracked files. npm.cmd ci --ignore-scripts installed fresh dependencies; the clone initially had no node_modules, dist, .env or internal docs. The tracked placeholder env example was copied locally for the npm start smoke; all real connection values came securely from process environment, which overrides placeholders. Installation reported zero vulnerabilities in its audit of 192 packages.
-
-Verification used a newly initialized SCRAM-authenticated PostgreSQL 18.6 instance, loopback port **51886**, with fresh databases named recruiter_bot, recruiter_bot_phase05_test and sql_detective. These names are enforced by existing guards. Using a fresh instance allows those guards to stay intact while keeping every existing database untouched. Do not run this final reproduction against an existing instance's databases. Actual data_directory/port were checked before writes; the isolated server was stopped afterward.
-
-All documented typecheck, lint and build commands passed. Fresh Bot migrations applied [1,2], their rerun applied []; both seeds loaded 15 candidates/six jobs. Verification confirmed exact fields/skills, runtime read-only permissions and totals 15/6/27/50/16. Detective fresh loading returned loaded with all 47 original rows; verification, no-op rerun, all five answers, compiled answer CLI and direct psql answer-file execution passed. A real recruiter_bot_app connection to sql_detective was refused with 42501.
-
-| Final suite | Passes | Failures | Skips |
+| Suite | Passes | Failures | Skips |
 | --- | --- | --- | --- |
 | Unit/infrastructure | 116 | 0 | 0 |
-| Storage, fresh disposable DB | 32 | 0 | 0 |
-| PostgreSQL matching API | 15 | 0 | 0 |
+| Storage on a fresh disposable database | 32 | 0 | 0 |
+| Matching API | 15 | 0 | 0 |
 | SQL Detective | 19 | 0 | 0 |
-| Active-database shutdown | 5 | 0 | 0 |
-| Total | 187 | 0 | 0 |
+| Additional active-database shutdown tests | 5 | 0 | 0 |
+| Recorded total | **187** | **0** | **0** |
 
-Counts include Node parent tests. The 182 existing tests ran from committed main. The five new shutdown tests ran against the Phase 09 working-tree additions; their typecheck/lint passed. The fresh storage case executed rather than skipping. These totals describe final successful runs; the initial registry EACCES and local harness/test-authoring issues were resolved before those runs.
+Counts include Node parent tests. The first four suites (**182 tests**) ran in that clean checkout. The five shutdown tests and their typecheck/lint checks ran separately against the additional test code; they are not evidence of a new clean-checkout run of the current revision. The deadline test intentionally prolongs test-only database work and expects a child exit of 1 with `shutdown_failed`.
 
-Eight read-only README curls passed against the compiled clone, with exact success examples and safe 400/404/400 errors; its pool closed. A separate **npm.cmd start** smoke on port 51525 returned health/ready 200 and both matching endpoints with 15/six matches. db:verify afterward passed and the clone's tracked files remained clean.
+For this README revision, paths, links, commands, configuration and example responses are checked against tracked source and fixtures. Installation, build and live database suites were not rerun for documentation-only changes. Native Windows signal delivery and Node.js 24 execution remain unverified. The API's unpaginated full ranking and heuristic matching policy are suitable for the supplied small fixture; it listens only on loopback.
 
-test:shutdown requires the exact disposable test fixture prepared by test:db/test:api. It never migrates, seeds or edits data: owner locks roll back, and fixture verification runs before/after. Real active SELECT drain passes for both installed signal handlers; new TCP requests are refused and the real pool closes to zero clients. A blocked SELECT that reaches statement timeout returns safe 503 during drain. The deadline case deliberately extends only its test query beyond ordinary 2s/3s limits; the child logs shutdown_failed and exits 1 after the ten-second bound, as expected by a passing regression assertion.
+## Troubleshooting
 
-On Windows, IPC invokes the installed Node SIGINT/SIGTERM handlers; native console Ctrl+C/SIGTERM delivery remains unverified. The npm start smoke process was forcefully stopped after requests completed, which provides no graceful-signal evidence. No production code or matching policy changed.
+| Symptom | Check or action |
+| --- | --- |
+| `CONFIGURATION` or startup `invalidFields` | Replace all used placeholders, percent-encode credentials, check exact database/login names and remove URL query parameters/fragments. Check for process environment overrides. |
+| Connection refused or database unavailable | Start PostgreSQL; confirm host/port, password and database existence. Owner and runtime Bot URLs must use the same hostname/port. |
+| `UNSAFE_RUNTIME_ROLE` or runtime permission failure | Ensure `recruiter_bot_app` is a nonowner without elevated attributes or memberships. Apply the permission migration through the actual owner and run `db:verify`. |
+| Missing schema or failed readiness | Run `db:migrate`, `db:seed` and `db:verify` with owner/runtime URLs before starting. Readiness does not certify fixture contents. |
+| Migration-history/checksum mismatch | Restore the original applied migration from the repository; do not edit its checksum or remove ledger entries to bypass the check. |
+| Fixture conflict or Detective `FIXTURE_MISMATCH` | Inspect existing contents. Use the expected fixture or an empty dedicated database for initial setup; tools do not reset altered data. |
+| `BOT_DATABASE_ISOLATION` | As the Detective owner, revoke database privileges from PUBLIC and `recruiter_bot_app`; check effective CONNECT, including inherited access. |
+| Integration-test target/configuration failure | Configure the exact disposable Bot database and separate Detective database. Run Bot suites sequentially; prepare the baseline before shutdown tests. |
+| `dist/server.js` missing | Run `npm.cmd run build` from `backend/` before `npm.cmd start`. |
+| Listener unavailable / address in use | Stop the process occupying the configured port or choose another valid `PORT`; update curl URLs accordingly. |
+| PowerShell invokes an unexpected npm/curl command | Use `npm.cmd` and `curl.exe` explicitly. Adjust `$pgBin` if PostgreSQL is installed elsewhere. |
 
-The [configured repository](https://github.com/hegdepunithramesh/Recruiterflow-Backend-Assignment) requested authentication for anonymous main-ref access. Confirm public visibility or the recruiter's granted private access before submitting. Review and commit the unstaged Phase 09 changes first; no automatic commit, push, invitation or submission occurred.
+## AI assistance
+
+AI assistants contributed to analysis, design, code, handwritten SQL, tests, documentation, debugging and automated verification. Independent human review is not documented.
