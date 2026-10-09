@@ -16,7 +16,11 @@
     "db:seed": "node --env-file-if-exists=.env --import tsx src/storage/cli.ts seed",
     "db:verify": "node --env-file-if-exists=.env --import tsx src/storage/cli.ts verify",
     "test:db": "node --env-file-if-exists=.env --import tsx --test tests/integration/storage.test.ts",
-    "test:api": "node --env-file-if-exists=.env --import tsx --test tests/integration/matching.test.ts"
+    "test:api": "node --env-file-if-exists=.env --import tsx --test tests/integration/matching.test.ts",
+    "detective:load": "node --env-file-if-exists=.env --import tsx src/detective/cli.ts load",
+    "detective:verify": "node --env-file-if-exists=.env --import tsx src/detective/cli.ts verify",
+    "detective:answers": "node --env-file-if-exists=.env --import tsx src/detective/cli.ts answers",
+    "test:detective": "node --env-file-if-exists=.env --import tsx --test tests/integration/detective.test.ts"
   },
   "dependencies": {
     "express": "5.2.1",

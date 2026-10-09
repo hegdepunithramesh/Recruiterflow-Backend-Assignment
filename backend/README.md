@@ -1,6 +1,6 @@
 # Recruiter Bot backend
 
-Section B backend through **Phase 07**: Express infrastructure, five PostgreSQL domain tables, handwritten migrations, repeatable fixture ingestion and both matching APIs. The shared pure engine, real SQL/HTTP behavior and runtime permissions are verified on PostgreSQL **18.6**. The separate SQL Detective dataset/answers remain pending.
+Section B backend through **Phase 08 implementation and live verification**: Recruiter Bot storage/matching APIs remain verified on PostgreSQL **18.6**. SQL Detective has separate handwritten setup, all four required answers plus the window-function bonus, a guarded offline loader and verification tests. The user reported **19 live PostgreSQL tests passed, zero failures and zero skips**, verifying all five baseline results and the selected edge cases. The separate Detective connection/setup blocker is resolved.
 
 ## Observed verification — 9 October 2026
 
@@ -215,6 +215,72 @@ Real PostgreSQL checks covered fresh migration, migration/seed reruns, exact fie
 
 Phase 07 reran test:db: **30 subtests passed**, plus the parent (31 passes), one fresh-case skip, zero failures. Test:api passed **14 subtests**, plus the parent (15 passes), zero failures/skips. It executes real HTTP/SQL for all 90 pairs in both directions, complete literal rankings, reasons/details, repeat ordering, validation before reads, absent/empty subjects, zero-skill candidates, rounded-score ties and two-client snapshot isolation. Real termination, exhaustion of all five clients, blocked-SELECT statement timeout, missing table and read-permission loss produce safe failures and recovery. A scorer exception is deliberately injected after real reads to verify generic 500 and release before scoring.
 
-The first HTTP suite run exposed an unhandled checked-out client connection error. Capturing client error events during snapshots/readiness and discarding damaged clients fixed it; the expanded suite passed afterward. Runtime startup/readiness changes required no new migration or ledger privileges. Applied SQL and the assignment fixture/policy remain unchanged. Finished-assignment clean-checkout reproduction, Detective access isolation, shutdown with active PostgreSQL work and final submission review remain unverified.
+The first HTTP suite run exposed an unhandled checked-out client connection error. Capturing client error events during snapshots/readiness and discarding damaged clients fixed it; the expanded suite passed afterward. Runtime startup/readiness changes required no new migration or ledger privileges. Applied SQL and the assignment fixture/policy remain unchanged. Finished-assignment clean-checkout reproduction, shutdown with active PostgreSQL work and final submission review remain unverified. Phase 08 subsequently verified the Detective guard's effective Bot CONNECT restriction.
 
-The real `.env`, generated `dist/`, `node_modules/`, assignment PDF and internal planning files are ignored. Include the placeholder-only `.env.example` and package-lock.json in the reviewed submission. AI assisted planning, scaffolding, handwritten schema/seed/repositories and matching/API implementation, tests, documentation, review and debugging. Phase 08 has not started; SQL Detective remains pending.
+## SQL Detective: separate setup and answers
+
+The submitted [sql_detective.sql](sql_detective.sql) contains **five executable read-only queries**, each preceded by its question-number comment; Question 5 is the bonus. [Setup SQL](sql/detective/setup.sql) is separate and preserves the PDF's four original tables and all **47 rows**: five recruiters, seven postings, 11 applicants and 24 interviews. Only the four supplied primary keys are present; all other fields remain nullable, with no added foreign keys/checks/indexes or cleaned identities. A separate JSON reference verifies every loaded field and is not used to generate SQL.
+
+Create **sql_detective** separately from recruiter_bot. From PowerShell, connect interactively as the database owner (postgres on the verified local installation):
+
+```powershell
+$pgBin = 'C:\Program Files\PostgreSQL\18\bin'
+& "$pgBin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d postgres -W
+```
+
+In psql, inspect existence first. Run CREATE DATABASE only if absent; an existing database must be inspected, never reset:
+
+```sql
+SELECT datname FROM pg_database WHERE datname = 'sql_detective';
+-- Only if absent:
+CREATE DATABASE sql_detective;
+-- For this dedicated assignment database, isolate the Bot login:
+REVOKE ALL ON DATABASE sql_detective FROM PUBLIC, recruiter_bot_app;
+\connect sql_detective
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON SCHEMA public FROM recruiter_bot_app;
+\quit
+```
+
+The owner retains access; runtime recruiter_bot_app must have no effective CONNECT to sql_detective. If using another owner, connect as that actual owner. These changes concern only the Detective database, not Bot data or global role attributes. The offline guard fails with BOT_DATABASE_ISOLATION if PUBLIC/direct/inherited privileges still permit Bot access.
+
+Add DETECTIVE_DATABASE_URL locally in backend/.env using a separate owner login, targeting exactly `/sql_detective`. The placeholder format is in .env.example. Keep DATABASE_URL on recruiter_bot_app/recruiter_bot. Do not substitute the Bot URL, target its disposable test database, paste credentials into commands or commit the real env file. Detective config rejects wrong targets, the Bot login, URL query parameters/fragments and malformed credentialed URLs. The HTTP server never reads this connection.
+
+From backend/:
+
+```powershell
+npm.cmd run detective:load
+npm.cmd run detective:verify
+npm.cmd run detective:answers
+npm.cmd run test:detective
+```
+
+Load creates the original schema/inserts in one transaction only on an empty public schema. A verified exact fixture rerun returns already_loaded without data writes. A partial, altered or conflicting dataset fails without dropping/truncating/merging anything. Verification compares all columns/types/nullability/defaults, primary keys/indexes and every row, including email case and NULLs. No Bot migration ledger or table is added. Answer execution uses one read-only snapshot and prints question numbers/result rows; credentials/raw driver errors are omitted. Tests add isolated edge data in transactions and always roll it back, then verify the original fixture.
+
+To run the single answer file directly after guarded loading/verification, connect interactively to the separate database and execute it from backend/:
+
+```powershell
+& "$pgBin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d sql_detective -W -v ON_ERROR_STOP=1 -f .\sql_detective.sql
+```
+
+No HTTP service is needed for Part 2. Compiled offline commands also work after npm.cmd run build, for example `node --env-file-if-exists=.env dist/detective/cli.js answers`. SQL/JSON files stay in their versioned locations, so compiled code resolves the same assets.
+
+The interpretations are explicit. Q1 uses stored open status. Q2 counts distinct applicant records at Final for every posting, including zeros and all outcomes; repeated interviews do not increase that applicant count. Q3 trims/lowercases email only in the query, groups all records with that identity, and counts distinct interview-linked postings. All stages/outcomes evidence a link, since the schema has no application/posting junction. It uses the smallest applicant ID's name and retains every identity record in applicant_ids, including unlinked records. NULL/blank emails remain separate identities keyed by applicant ID in a separate key column; matching names do not merge people.
+
+Q4 counts Final interview rows, including repeated, failed, no_show and pending rows in both denominator and the inclusive three-interview threshold. Only passed Finals enter the numerator. NUMERIC conversion happens before division; results are fractions, not percentages or explicitly rounded values. PostgreSQL NUMERIC is decoded as a string by pg; its numeric value is checked independently. The supplied pending interview is Technical and is excluded. Q2–Q5 include closed/on-hold postings.
+
+Q5 aggregates passed Final interview rows by department/recruiter, then DENSE_RANK ranks success counts within each department. Rank one returns every tied winner; recruiter ID only orders the final output, so it cannot break a tie. Departments with no successes are omitted; a hypothetical NULL department remains its own group and sorts last. This counts successful interview rows, not deduplicated people or titles. Email identity is a practical fixture assumption, not a guaranteed real-world person identifier.
+
+Verified baseline results from the user-reported live PostgreSQL suite; every actual result matched the independent expectation:
+
+| Question | Expected rows | Actual Phase 08 result |
+| --- | --- | --- |
+| 1 | Open postings: 1 (Backend Engineer I, recruiter 1 Priya Shah), 2 (Backend Engineer I, recruiter 2 Daniel Ortiz), 4 (Backend Engineer II, recruiter 1 Priya Shah), 5 (DevOps Engineer, recruiter 4 Wei Zhang). | VERIFIED: all four rows match. |
+| 2 | Posting IDs 1–7 have Final applicant counts 2/2/1/2/0/0/2. | VERIFIED: all seven rows match, including zeros. |
+| 3 | ananya.rao@mail.com / Ananya Rao: applicant IDs [1,2], jobs [1,4]; ben.turner@mail.com / Ben Turner: [3], jobs [1,3]; elena.popescu@mail.com / Elena Popescu: [6], jobs [2,7]. Each job_count is 2. | VERIFIED: all three identities and lists match. |
+| 4 | Recruiter 1 Priya Shah: 3 passed / 4 Finals = 0.75; recruiter 2 Daniel Ortiz: 2 / 4 = 0.5. Other recruiters excluded. | VERIFIED: both count/rate rows match; SQL NUMERIC division checked. |
+| 5 bonus | Data: recruiter 3 Fatima Al-Sayed, one placement; Engineering: recruiter 1 Priya Shah, three. Infrastructure omitted. | VERIFIED: both winning rows match. |
+
+Phase 08 implementation checks on 9 October compared every setup/reference value and all four definitions/20 columns directly with PDF pp. 11–13; exact match. All **116 unit/infrastructure tests** passed, including 15 new Detective checks; build/typecheck/lint passed. Initial missing-configuration attempts stopped safely before connection and were superseded by the user-reported live run: **19 tests passed, zero failures and zero skips**. That suite verified the four-table/47-row fixture, no-op loader rerun, all five answers, rollback-only edge cases, rejection of altered fixture definitions/data and read-only offline answer execution. Its connected-target and effective Bot CONNECT guards passed; it does not separately attempt a denied Bot login connection. Recruiter Bot db:verify and the earlier compiled development curl checks (port 51645) returned unchanged 15/six matches and complete examples. This documentation follow-up records those results without rerunning commands or changing implementation.
+
+The real `.env`, generated `dist/`, `node_modules/`, assignment PDF and internal planning files are ignored. Include the placeholder-only `.env.example`, versioned SQL/data and package-lock.json in the reviewed submission. AI assisted planning, scaffolding, handwritten schema/seed/repositories, matching/API and Detective implementation, tests, documentation, review and debugging. Phase 09 has not started. Finished-assignment clean checkout, final submission review and separate compiled CLI execution remain unverified; the live Detective suite and five baseline answers are verified.
