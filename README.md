@@ -76,9 +76,13 @@ IDs must be positive integers up to 2147483647, without leading zeros. Query par
 
 ## Architecture and matching decisions
 
-The HTTP layer validates requests and serializes responses; a service reads profiles through repositories; a pure TypeScript policy scores and orders them. Parameterized, handwritten SQL keeps queries and transaction boundaries visible without an ORM. The Recruiter Bot schema has five domain tables: candidates, jobs, skills and the two skill junction tables, with foreign keys and unique skill labels. Descriptive traits and culture keywords remain arrays on their parent records. A separate migration ledger records versions and checksums.
+This high-level overview shows the matching request flow, pure scoring policy, offline migration and seed tools, and separate SQL Detective database. [Mermaid source](backend/docs/architecture.mmd).
 
-Matches are computed on each request rather than persisted. This avoids stale rankings after profile edits and is inexpensive for the supplied dataset, at the cost of reading and sorting every counterpart. Each successful request uses one client and a read-only `REPEATABLE READ` transaction for the subject and counterpart queries. Profiles are validated, then the transaction commits and the client is released before scoring. The restricted runtime login has SELECT access to the five domain tables, with no writes, DDL or migration-ledger access. Migration and seed commands use a separate owner login.
+![Backend architecture](backend/docs/architecture.png)
+
+Matching requests pass through routes and a validating controller to a service that reads profiles through SQL repositories. A pure TypeScript policy scores and orders the loaded profiles without database or HTTP access; the controller serializes the JSON response. Parameterized, handwritten SQL keeps queries and transaction boundaries visible without an ORM. The Recruiter Bot schema has five domain tables: candidates, jobs, skills and the two skill junction tables, with foreign keys and unique skill labels. Descriptive traits and culture keywords remain arrays on their parent records. A separate migration ledger records versions and checksums.
+
+Matches are computed on each request rather than persisted. This avoids stale rankings after profile edits and is inexpensive for the supplied dataset, at the cost of reading and sorting every counterpart. Each successful request uses one client and a read-only `REPEATABLE READ` transaction for the subject and counterpart queries. Profiles are validated, then the transaction commits and the client is released before scoring. The restricted runtime login has SELECT access to the five domain tables, with no writes, DDL or migration-ledger access. Offline migration and seed commands use a separate owner login to create the schema and load assignment data. Independent SQL Detective commands load and query the supplied hiring dataset in the separate `sql_detective` database, outside the HTTP request flow.
 
 The score is `80 × skill coverage + 20 × experience fit`. Coverage is the fraction of distinct required skills the candidate has, using trimmed, lowercase exact labels. Experience fit is `min(candidate years / required years, 1)`; a zero-year requirement gives full experience credit. Skills carry most of the weight because they are the clearest supplied evidence of fit. Capping experience prevents surplus years from outweighing missing skills. Extra candidate skills are not penalized. These weights are an explicit heuristic, not a calibrated hiring probability; synonyms and semantic skill similarity are not modeled.
 
@@ -100,4 +104,4 @@ This documentation revision is checked against tracked paths, package scripts, c
 
 ## AI assistance
 
-AI assistants contributed to requirements analysis, design, implementation, handwritten SQL, tests, documentation, debugging and automated verification. 
+AI assistants contributed to requirements analysis, design, implementation, handwritten SQL, tests, documentation, debugging and automated verification.
